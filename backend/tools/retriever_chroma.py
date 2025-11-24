@@ -130,3 +130,4 @@ class ChromaRetriever:
             logger.error(f"Error retrieving documents: {e}")
             raise RetrievalError(f"Retrieval failed: {e}")
 
+

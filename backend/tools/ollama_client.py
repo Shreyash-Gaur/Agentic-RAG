@@ -115,3 +115,4 @@ class OllamaClient:
             logger.error(f"Ollama API error: {e}")
             raise LLMError(f"Failed to chat: {e}")
 
+

@@ -45,3 +45,4 @@ class HealthResponse(BaseModel):
     status: str = Field(..., description="Service status")
     version: Optional[str] = Field(None, description="API version")
 
+

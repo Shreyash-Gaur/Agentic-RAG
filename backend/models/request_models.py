@@ -34,3 +34,4 @@ class BatchIngestRequest(BaseModel):
     file_type: str = Field("pdf", description="Type of files")
     metadata: Optional[List[Dict[str, Any]]] = Field(None, description="Optional metadata per document")
 
+

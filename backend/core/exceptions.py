@@ -37,3 +37,4 @@ class ConfigurationError(AgenticRAGException):
     """Error in configuration."""
     pass
 
+

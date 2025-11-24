@@ -21,3 +21,4 @@ python-dotenv>=1.0.0
 # Optional: For better performance
 # faiss-gpu>=1.7.4  # Use if GPU available
 
+

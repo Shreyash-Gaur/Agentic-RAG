@@ -70,3 +70,4 @@ class Embedder:
             embeddings.append(self.embed(text))
         return embeddings
 
+
