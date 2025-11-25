@@ -1,48 +1,89 @@
-"""
-Pydantic response models for API endpoints.
-"""
+# backend/models/response_models.py
 
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from __future__ import annotations
+from pydantic import BaseModel
+from typing import Optional, List, Dict, Any
 
 
+# ------------------------------
+# Document / Chunk returned during retrieval
+# ------------------------------
 class DocumentResult(BaseModel):
-    """Model for a retrieved document."""
-    text: str = Field(..., description="Document text")
-    content: str = Field(..., description="Document content (alias for text)")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Document metadata")
-    score: float = Field(..., description="Retrieval score")
-    source: Optional[str] = Field(None, description="Document source")
+    """
+    Represents a retrieved vector chunk and its metadata.
+    """
+    text: str
+    score: float
+    metadata: Dict[str, Any] = {}
+    source: Optional[str] = None
+    chunk_id: Optional[int] = None
 
 
+# ------------------------------
+# Retrieve Endpoint Response
+# ------------------------------
+class RetrieveResponse(BaseModel):
+    query: str
+    results: List[DocumentResult]
+    num_results: int
+
+
+# ------------------------------
+# Final RAG Answer
+# ------------------------------
 class QueryResponse(BaseModel):
-    """Response model for RAG query."""
-    query: str = Field(..., description="Original query")
-    answer: str = Field(..., description="Generated answer")
-    context: List[DocumentResult] = Field(..., description="Retrieved context documents")
-    num_sources: int = Field(..., description="Number of sources used")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+    """
+    Response schema for /query, /agent_query.
+    """
+    query: str
+    answer: str
+    sources: List[DocumentResult]
+    num_sources: int
+    prompt: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+# ------------------------------
+# Agentic Multi-step Reasoning Output
+# ------------------------------
+class IterationStep(BaseModel):
+    step: int
+    reasoning: str
+    retrieved: List[DocumentResult]
 
 
 class IterativeQueryResponse(BaseModel):
-    """Response model for iterative RAG query."""
-    query: str = Field(..., description="Original query")
-    answer: str = Field(..., description="Final generated answer")
-    iterations: List[Dict[str, Any]] = Field(..., description="Iteration history")
-    total_context: int = Field(..., description="Total context documents retrieved")
+    """
+    Multi-step agent response.
+    """
+    query: str
+    answer: str
+    iterations: List[IterationStep]
+    final_sources: List[DocumentResult]
 
 
+# ------------------------------
+# Ingestion API Response
+# ------------------------------
 class IngestResponse(BaseModel):
-    """Response model for document ingestion."""
-    success: bool = Field(..., description="Whether ingestion was successful")
-    file_path: str = Field(..., description="Path to ingested file")
-    num_chunks: int = Field(..., description="Number of chunks created")
-    message: str = Field(..., description="Status message")
+    document: str
+    num_chunks: int
+    dim: int
+    status: str
 
 
+class BatchIngestResponse(BaseModel):
+    results: List[IngestResponse]
+
+
+# ------------------------------
+# Health Check Model
+# ------------------------------
 class HealthResponse(BaseModel):
-    """Response model for health check."""
-    status: str = Field(..., description="Service status")
-    version: Optional[str] = Field(None, description="API version")
-
+    status: str
+    retriever_loaded: bool
+    reranker_loaded: bool
+    ollama_configured: bool
+    num_documents: Optional[int] = None
+    embedding_model: Optional[str] = None
 

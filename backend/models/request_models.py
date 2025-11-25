@@ -1,37 +1,77 @@
-"""
-Pydantic request models for API endpoints.
-"""
 
+# backend/models/request_models.py
+
+from __future__ import annotations
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 
 
+# ------------------------------
+# Basic RAG Query
+# ------------------------------
 class QueryRequest(BaseModel):
-    """Request model for RAG query."""
-    query: str = Field(..., description="User query")
-    top_k: int = Field(5, ge=1, le=20, description="Number of documents to retrieve")
-    system_prompt: Optional[str] = Field(None, description="Optional system prompt")
-    conversation_id: Optional[str] = Field(None, description="Conversation ID for context")
+    """
+    Request schema for /query and /agent_query endpoints.
+    """
+    query: str
+    top_k: int = Field(default=5, ge=1, le=50)
+    system_prompt: Optional[str] = None
+    conversation_id: Optional[str] = "default"
+    max_tokens: int = 512
+    temperature: float = 0.0
 
 
+# ------------------------------
+# Retrieval-only request
+# ------------------------------
+class RetrieveRequest(BaseModel):
+    """
+    Request schema for /retrieve endpoint.
+    """
+    query: str
+    top_k: int = Field(default=5, ge=1, le=50)
+
+
+# ------------------------------
+# Iterative Agentic Query (multi-step)
+# ------------------------------
 class IterativeQueryRequest(BaseModel):
-    """Request model for iterative RAG query."""
-    query: str = Field(..., description="User query")
-    max_iterations: int = Field(3, ge=1, le=10, description="Maximum refinement iterations")
-    top_k: int = Field(5, ge=1, le=20, description="Number of documents per retrieval")
+    """
+    Request schema for agent-based iterative reasoning.
+    """
+    query: str
+    conversation_id: Optional[str] = "default"
+    top_k: int = 5
+    max_iterations: int = 3
+    temperature: float = 0.0
 
 
+# ------------------------------
+# Multi-document ingestion
+# ------------------------------
 class IngestRequest(BaseModel):
-    """Request model for document ingestion."""
-    file_path: str = Field(..., description="Path to document file")
-    file_type: str = Field("pdf", description="Type of file (pdf, txt, etc.)")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional document metadata")
+    """
+    Request schema for ingesting a single PDF/doc.
+    """
+    file_path: str
+    chunk_tokens: int = 512
+    overlap: int = 128
 
 
 class BatchIngestRequest(BaseModel):
-    """Request model for batch document ingestion."""
-    file_paths: List[str] = Field(..., description="List of file paths")
-    file_type: str = Field("pdf", description="Type of files")
-    metadata: Optional[List[Dict[str, Any]]] = Field(None, description="Optional metadata per document")
+    """
+    Request schema for ingesting multiple documents.
+    """
+    file_paths: List[str]
+    chunk_tokens: int = 512
+    overlap: int = 128
 
 
+# ------------------------------
+# Embedding Cache Management
+# ------------------------------
+class CacheLookupRequest(BaseModel):
+    """
+    For testing if a text is already embedded.
+    """
+    text: str

@@ -1,93 +1,58 @@
+# backend/agents/writer_agent.py
 """
-Writer Agent - responsible for generating responses based on retrieved context.
+WriterAgent
+- Responsible for turning retrieved context + user question into a final answer.
+- Uses OllamaClient (HTTP client wrapper) or other generator.
+- Exposes generate_answer(query, context, max_tokens, temperature)
 """
 
-from typing import List, Dict, Any
-from core.logger import setup_logger
-from core.exceptions import AgentError
+from typing import List, Dict, Any, Optional
+import logging
+import os
+from tools.ollama_client import OllamaClient
 
-logger = setup_logger(__name__)
-
+log = logging.getLogger("agentic-rag.writer")
 
 class WriterAgent:
-    """
-    Agent responsible for writing responses based on retrieved context.
-    """
-    
-    def __init__(self, llm_client):
-        """
-        Initialize the writer agent.
-        
-        Args:
-            llm_client: LLM client instance (e.g., OllamaClient)
-        """
-        self.llm_client = llm_client
-    
-    def write(
+    def __init__(self, ollama_client: Optional[OllamaClient] = None, model: Optional[str] = None):
+        # Ollama client wrapper (simple). If None, create one from environment.
+        self.ollama = ollama_client or OllamaClient()
+        self.model = model or os.getenv("OLLAMA_MODEL", None)
+
+    def _build_prompt(self, query: str, context: List[Dict[str, Any]]) -> str:
+        instructions = (
+            "You are an assistant. Use the context passages to answer the question. "
+            "Give a concise answer and list the sources (chunk ids) you used."
+        )
+        ctx_parts = []
+        for c in context:
+            meta = c.get("meta", {})
+            text = meta.get("text", "")[:2000]
+            idx = c.get("index")
+            ctx_parts.append(f"[chunk {idx}]\n{text}\n")
+        context_block = "\n".join(ctx_parts)
+        prompt = f"{instructions}\n\nCONTEXT:\n{context_block}\n\nQUESTION: {query}\n\nAnswer:"
+        return prompt
+
+    def generate_answer(
         self,
         query: str,
         context: List[Dict[str, Any]],
-        system_prompt: str = None
-    ) -> str:
-        """
-        Generate a response based on query and context.
-        
-        Args:
-            query: User query
-            context: Retrieved context documents
-            system_prompt: Optional system prompt
-            
-        Returns:
-            Generated response
-        """
+        max_tokens: int = 512,
+        temperature: float = 0.0
+    ) -> Dict[str, Any]:
+        prompt = self._build_prompt(query, context)
+        # prefer Ollama generate via HTTP wrapper
         try:
-            logger.info(f"Writing response for query: {query}")
-            
-            # Format context
-            context_text = self._format_context(context)
-            
-            # Build prompt
-            prompt = self._build_prompt(query, context_text, system_prompt)
-            
-            # Generate response
-            response = self.llm_client.generate(prompt)
-            
-            logger.info("Response generated successfully")
-            return response
-            
+            if self.model:
+                # OllamaClient.generate expects model param
+                text = self.ollama.generate(self.model, prompt, max_tokens=max_tokens, temperature=temperature)
+            else:
+                # If no model configured, try env inside ollama client
+                text = self.ollama.generate(os.getenv("OLLAMA_MODEL", ""), prompt, max_tokens=max_tokens, temperature=temperature)
+            return {"answer": text, "prompt": prompt, "success": True}
         except Exception as e:
-            logger.error(f"Error during writing: {e}")
-            raise AgentError(f"Writing failed: {e}")
-    
-    def _format_context(self, context: List[Dict[str, Any]]) -> str:
-        """Format context documents into a single string."""
-        formatted = []
-        for i, doc in enumerate(context, 1):
-            content = doc.get('content', doc.get('text', ''))
-            source = doc.get('source', doc.get('metadata', {}).get('source', 'Unknown'))
-            formatted.append(f"[Document {i} - Source: {source}]\n{content}\n")
-        return "\n".join(formatted)
-    
-    def _build_prompt(
-        self,
-        query: str,
-        context: str,
-        system_prompt: str = None
-    ) -> str:
-        """Build the prompt for the LLM."""
-        if system_prompt is None:
-            system_prompt = """You are a helpful assistant that answers questions based on the provided context.
-Use only the information from the context to answer. If the context doesn't contain
-enough information, say so."""
-        
-        prompt = f"""{system_prompt}
-
-Context:
-{context}
-
-Question: {query}
-
-Answer:"""
-        return prompt
-
+            log.exception("WriterAgent generation failed: %s", e)
+            # fallback: return prompt so caller can run alternate generation
+            return {"answer": None, "prompt": prompt, "success": False, "error": str(e)}
 

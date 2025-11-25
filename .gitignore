@@ -8,6 +8,7 @@ venv/
 env/
 ENV/
 .venv
+*.pyc
 
 # IDEs
 .vscode/
@@ -16,17 +17,20 @@ ENV/
 *.swo
 *~
 
-# Data directories
+# Data directories (raw input)
 data/
-*.db
-*.sqlite
-*.sqlite3
+*.pdf
+*.csv
+*.tsv
+*.txt
 
-# Vector stores
-backend/db/faiss_index/
-backend/db/chroma_db/
+# Vector stores & indexes
+backend/db/
+*.index
 *.faiss
+*.npz
 *.pkl
+*.jsonl
 
 # Environment
 .env
@@ -36,6 +40,10 @@ backend/db/chroma_db/
 *.log
 logs/
 
+# Ollama cache (if any)
+ollama/
+ollama_cache/
+
 # Jupyter
 .ipynb_checkpoints/
 
@@ -43,9 +51,10 @@ logs/
 .DS_Store
 Thumbs.db
 
-# Build
+# Build artifacts
 dist/
 build/
 *.egg-info/
 
-
+# Chainlit (if used)
+.chainlit/
