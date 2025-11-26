@@ -4,57 +4,51 @@ import json
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import requests
-
 from dotenv import load_dotenv
 load_dotenv()
 
-# services
-from services.memory_service import MemoryService
-from services.retrieve_service import RetrieveService
+# import settings and services
+from backend.core.config import settings
+from backend.services.memory_service import MemoryService
+from backend.services.embed_cache_service import EmbedCacheService
+from backend.services.retrieve_service import RetrieveService
 
-# agents
-from agents.researcher_agent import ResearcherAgent
-from agents.writer_agent import WriterAgent
-from agents.rag_agent import RAGAgent
+# optional reranker and ollama client
+from backend.tools.ollama_client import OllamaClient
 
-# after creating retriever_service, memory_service
-researcher = ResearcherAgent(retriever_service)
-writer = WriterAgent()  # uses Ollama via env if present
-rag_agent = RAGAgent(researcher, writer, memory=memory_service)
-
-# config / env
-RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "true").lower() in ("1", "true", "yes")
-RERANKER_MODEL = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
-RERANKER_INITIAL_K = int(os.getenv("RERANKER_INITIAL_K", "20"))
-
-BACKEND_DIR = Path(__file__).resolve().parent
-DB_DIR = BACKEND_DIR / "db"
-DEFAULT_INDEX = DB_DIR / "book_king_faiss.index"
-DEFAULT_META = DB_DIR / "book_king_meta.jsonl"
-
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "")
-USE_OLLAMA = bool(OLLAMA_MODEL)
-
-CORS_ORIGINS = [s.strip() for s in os.getenv("CORS_ORIGINS", "").split(",") if s.strip()]
-APP = FastAPI(title="Agentic-RAG")
-
-if CORS_ORIGINS:
-    from fastapi.middleware.cors import CORSMiddleware
-    APP.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"], allow_credentials=True)
-
+# Logging
 logger = logging.getLogger("agentic-rag")
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 
-# runtime globals
+APP = FastAPI(title=settings.API_TITLE, version=settings.API_VERSION)
+
+# CORS
+cors_origins = settings.CORS
+if cors_origins:
+    from fastapi.middleware.cors import CORSMiddleware
+    APP.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+# Config paths
+DEFAULT_INDEX = settings.FAISS_INDEX_PATH
+DEFAULT_META = settings.FAISS_META_PATH
+
+# Globals (singletons)
 memory_service: Optional[MemoryService] = None
+embed_cache: Optional[EmbedCacheService] = None
 retrieve_service: Optional[RetrieveService] = None
+reranker_obj = None
+ollama_client: Optional[OllamaClient] = None
 
-
-# Pydantic models
+# Request/response models
 class RetrieveRequest(BaseModel):
     query: str
     top_k: int = 5
@@ -72,155 +66,182 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     query: str
     answer: str
-    prompt: str
-    sources: list
+    prompt: Optional[str] = None
+    sources: Optional[List[Dict[str, Any]]] = None
 
-class ChatRequest(BaseModel):
-    conv_id: Optional[str] = "default"
-    query: str
-    top_k: int = 5
 
-class ChatResponse(BaseModel):
-    conv_id: str
-    answer: str
-    sources: list
-    history: list
-
-# startup wiring
 @APP.on_event("startup")
 def startup_event():
-    global memory_service, retrieve_service, reranker
+    global memory_service, embed_cache, retrieve_service, reranker_obj, ollama_client
 
-    idx_path = os.getenv("FAISS_INDEX_PATH", str(DEFAULT_INDEX))
-    meta_path = os.getenv("FAISS_META_PATH", str(DEFAULT_META))
+    logger.info("Starting Agentic-RAG service...")
 
-    # instantiate reranker object if needed (RAG/agents may use)
-    reranker_obj = None
-    if RERANKER_ENABLED:
-        try:
-            from tools.reranker import CrossEncoderReranker
-            reranker_obj = CrossEncoderReranker(model_name=RERANKER_MODEL)
-            logger.info("Reranker loaded: %s", RERANKER_MODEL)
-        except Exception as e:
-            logger.warning("Reranker init failed: %s", e)
-            reranker_obj = None
-
-    # Retrieve service
-    try:
-        retrieve_service = RetrieveService(
-            index_path=idx_path,
-            meta_path=meta_path,
-            reranker_obj=reranker_obj,
-            reranker_enabled=RERANKER_ENABLED,
-        )
-        logger.info("RetrieveService initialized")
-    except Exception as e:
-        logger.error("Failed to init RetrieveService: %s", e)
-        retriever_service = None
-
-    # Memory service (SQLite-backed)
+    # Memory
     try:
         memory_service = MemoryService(
-            max_history=int(os.getenv("MAX_MEMORY_TURNS", 20)),
-            use_sqlite=os.getenv("MEMORY_SQLITE", "true").lower() in ("1","true","yes"),
-            db_path=os.getenv("MEMORY_DB_PATH", str(DB_DIR / "memory_store.sqlite")),
+            max_history=settings.MEMORY_MAX_TURNS,
+            use_sqlite=True,
+            db_path=settings.MEMORY_DB_PATH,
+            preload=False,  # don't preload everything by default
         )
-        logger.info("MemoryService initialized")
+        logger.info("MemoryService initialized: %s", settings.MEMORY_DB_PATH)
     except Exception as e:
-        logger.error("Failed to init MemoryService: %s", e)
+        logger.exception("Failed to init MemoryService: %s", e)
         memory_service = None
 
-    # RAG Service - wire your researcher/writer agents into it
+    # Embed cache
     try:
-        # If your rag_service requires retriever/memory/ollama clients pass them here.
-        rag_service = RAGService(retriever=retriever_service, memory=memory_service, ollama_base_url=OLLAMA_BASE_URL, ollama_model=OLLAMA_MODEL)
-        logger.info("RAGService initialized")
+        embed_cache = EmbedCacheService(db_path=settings.EMBEDDING_CACHE_DB)
+        logger.info("EmbedCacheService initialized: %s", settings.EMBEDDING_CACHE_DB)
     except Exception as e:
-        logger.warning("RAGService not initialized fully: %s", e)
-        rag_service = None
+        logger.exception("Failed to init EmbedCacheService: %s", e)
+        embed_cache = None
+
+    # Reranker (optional)
+    if settings.RERANKER_ENABLED:
+        try:
+            from backend.tools.reranker import CrossEncoderReranker
+            reranker_obj = CrossEncoderReranker(model_name=settings.RERANKER_MODEL)
+            logger.info("Reranker loaded: %s", settings.RERANKER_MODEL)
+        except Exception as e:
+            logger.exception("Failed to load reranker: %s", e)
+            reranker_obj = None
+
+    # Ollama client (optional)
+    try:
+        if settings.OLLAMA_MODEL:
+            ollama_client = OllamaClient(base_url=settings.OLLAMA_BASE_URL)
+            logger.info("Ollama client ready at %s (model=%s)", settings.OLLAMA_BASE_URL, settings.OLLAMA_MODEL)
+        else:
+            ollama_client = None
+    except Exception as e:
+        logger.exception("Failed to init OllamaClient: %s", e)
+        ollama_client = None
+
+    # RetrieveService: pass embed_cache and reranker if available
+    try:
+        retrieve_service = RetrieveService(
+            index_path=DEFAULT_INDEX,
+            meta_path=DEFAULT_META,
+            embed_cache=embed_cache,
+            embedder=None,  # Use default Embedder inside RetrieveService
+            reranker_obj=reranker_obj,
+            reranker_enabled=bool(reranker_obj is not None),
+        )
+        logger.info("RetrieveService initialized (index=%s)", DEFAULT_INDEX)
+    except Exception as e:
+        logger.exception("Failed to init RetrieveService: %s", e)
+        retrieve_service = None
+
+
+@APP.on_event("shutdown")
+def shutdown_event():
+    logger.info("Shutting down Agentic-RAG service...")
+    try:
+        if retrieve_service:
+            retrieve_service.close()
+    except Exception:
+        pass
+    try:
+        if embed_cache:
+            embed_cache.close()
+    except Exception:
+        pass
+    try:
+        if memory_service:
+            memory_service.close()
+    except Exception:
+        pass
+
 
 @APP.get("/health")
 def health():
     return {
         "status": "ok",
-        "retriever_loaded": retriever_service is not None,
-        "memory_loaded": memory_service is not None,
-        "rag_loaded": rag_service is not None,
-        "ollama": USE_OLLAMA
+        "retriever_loaded": retrieve_service is not None,
+        "reranker_loaded": reranker_obj is not None,
+        "ollama_configured": bool(settings.OLLAMA_MODEL),
     }
 
-# Retrieval endpoint (plain)
+
 @APP.post("/retrieve", response_model=RetrieveResponse)
 def retrieve(req: RetrieveRequest):
-    if retriever_service is None:
+    if retrieve_service is None:
         raise HTTPException(status_code=503, detail="Retriever not initialized")
-    results = retriever_service.retrieve(req.query, top_k=req.top_k)
+
+    try:
+        results = retrieve_service.retrieve(req.query, top_k=req.top_k)
+    except Exception as e:
+        logger.exception("Retrieve failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
     return {"query": req.query, "results": results}
 
-# Query endpoint (RAG -> generate via rag_service or Ollama)
+
+def assemble_prompt(query: str, chunks: List[Dict[str, Any]]) -> str:
+    instructions = (
+        "You are a helpful assistant. Use the following extracted passages from the book to answer the question. "
+        "Be concise and include citations in the form [chunk_id]. If you cannot find the answer in the passages, say so."
+    )
+    ctx_parts = []
+    for i, c in enumerate(chunks):
+        meta = c.get("meta", {})
+        text = meta.get("text", "")
+        cid = c.get("index", i)
+        source = meta.get("pdf", meta.get("pid", "unknown"))
+        header = f"[chunk {cid} | source: {source}]"
+        ctx_parts.append(f"{header}\n{text}\n")
+    context = "\n\n".join(ctx_parts)
+    prompt = f"{instructions}\n\nCONTEXT:\n{context}\n\nQUESTION: {query}\n\nAnswer:"
+    return prompt
+
+
+def call_ollama_generate(prompt: str, max_tokens: int = 512, temperature: float = 0.0) -> Optional[str]:
+    """
+    Call Ollama to generate. Defensive: returns None on failure or when Ollama not configured.
+    """
+    if not settings.OLLAMA_MODEL or not ollama_client:
+        return None
+    try:
+        # Ollama generate wrapper uses model at call time
+        out = ollama_client.generate(model=settings.OLLAMA_MODEL, prompt=prompt, max_tokens=max_tokens, temperature=temperature)
+        return out
+    except Exception as e:
+        logger.exception("Ollama generate failed: %s", e)
+        return None
+
+
 @APP.post("/query", response_model=QueryResponse)
 def query(req: QueryRequest):
-    if retriever_service is None:
+    if retrieve_service is None:
         raise HTTPException(status_code=503, detail="Retriever not initialized")
 
-    # fetch top-k passages (retriever handles rerank)
-    results = retriever_service.retrieve(req.query, top_k=req.top_k)
+    # retrieve (with reranker internal to RetrieveService if enabled)
+    try:
+        if retrieve_service.reranker_enabled and reranker_obj:
+            initial_k = max(settings.RERANKER_INITIAL_K, req.top_k)
+            candidates = retrieve_service.retrieve(req.query, top_k=initial_k)
+            # reranker object may have different method names
+            try:
+                results = reranker_obj.rerank_results(req.query, candidates, top_k=req.top_k)
+            except Exception:
+                # fallback to retrieve top_k
+                results = candidates[:req.top_k]
+        else:
+            results = retrieve_service.retrieve(req.query, top_k=req.top_k)
+    except Exception as e:
+        logger.exception("Retrieve step failed: %s", e)
+        raise HTTPException(status_code=500, detail="Retrieval failed")
 
-    # build prompt
-    prompt_parts = []
-    for r in results:
-        meta = r.get("meta", {})
-        text = meta.get("text", "")
-        cid = r.get("index")
-        prompt_parts.append(f"[chunk {cid}]\n{text}\n")
-    prompt = "Use the following context to answer the question:\n\n" + "\n".join(prompt_parts) + f"\n\nQUESTION: {req.query}\n\nAnswer:"
+    # Assemble prompt
+    prompt = assemble_prompt(req.query, results)
 
-    # Prefer RAG service generation if available
-    answer = None
-    if rag_service is not None:
-        try:
-            gen = rag_service.generate_from_prompt(prompt, max_tokens=req.max_tokens, temperature=req.temperature)
-            answer = gen
-        except Exception as e:
-            logger.warning("RAGService generation failed: %s", e)
-            answer = None
+    # Try generate via Ollama
+    generated = call_ollama_generate(prompt, max_tokens=req.max_tokens, temperature=req.temperature)
 
-    # fallback Ollama direct call
-    if answer is None and USE_OLLAMA:
-        try:
-            url = f"{OLLAMA_BASE_URL}/api/models/{OLLAMA_MODEL}/generate"
-            payload = {"prompt": prompt, "max_tokens": req.max_tokens, "temperature": req.temperature}
-            r = requests.post(url, json=payload, timeout=120)
-            if r.status_code == 200:
-                data = r.json()
-                answer = data.get("generated") or data.get("text") or json.dumps(data)
-            else:
-                logger.warning("Ollama generate error: %s", r.status_code)
-        except Exception as e:
-            logger.warning("Ollama call failed: %s", e)
+    if generated is None:
+        answer = "No generator available (Ollama not configured). Returning prompt and retrieved passages.\n\n" + prompt
+    else:
+        answer = generated
 
-    if answer is None:
-        answer = "No generator available. Returning prompt and retrieved passages.\n\n" + prompt
-
-    sources = [{"index": r["index"], "score": r["score"], "meta": r["meta"]} for r in results]
+    sources = [{"index": r.get("index"), "score": r.get("score"), "meta": r.get("meta")} for r in results]
     return {"query": req.query, "answer": answer, "prompt": prompt, "sources": sources}
-
-# Chat endpoint: uses RAGService if available and stores in memory
-@APP.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
-    if rag_service is None:
-        raise HTTPException(status_code=503, detail="RAG service not available")
-
-    conv_id = req.conv_id or "default"
-    # run rag query (RAGService should support a query() method returning answer and sources/context)
-    out = rag_service.query(req.query, top_k=req.top_k)
-    answer = out.get("answer") or out.get("generated") or out.get("text") or ""
-    sources = out.get("sources", [])
-
-    # persist to memory
-    if memory_service is not None:
-        memory_service.add_turn(conv_id, "user", req.query, meta={"sources": None})
-        memory_service.add_turn(conv_id, "assistant", answer, meta={"sources": sources})
-
-    history = memory_service.get_history(conv_id) if memory_service else []
-    return {"conv_id": conv_id, "answer": answer, "sources": sources, "history": history}
