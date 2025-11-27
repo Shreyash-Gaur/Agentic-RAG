@@ -1,4 +1,9 @@
 # backend/main.py
+# add near other imports at top of file
+from fastapi import BackgroundTasks, UploadFile, File
+import uuid
+import subprocess
+import shlex
 import os
 import json
 import logging
@@ -162,6 +167,62 @@ def health():
         "reranker_loaded": reranker_obj is not None,
         "ollama_configured": bool(settings.OLLAMA_MODEL),
     }
+
+# ------------------------------
+# Ingest endpoints (file upload / directory trigger)
+# ------------------------------
+
+INGEST_UPLOAD_DIR = Path("data/book")
+INGEST_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+def _run_ingest_subprocess(cmd: str, env: Optional[Dict[str, str]] = None) -> None:
+    """
+    Run ingestion command in a detached subprocess.
+    We use subprocess.Popen to avoid blocking; logs will be printed to server stdout/stderr.
+    """
+    # Ensure we run from repo root and have PYTHONPATH
+    full_env = os.environ.copy()
+    if env:
+        full_env.update(env)
+    # Run in background (no wait)
+    # Use shell=False with simple list to avoid shell-injection risks
+    subprocess.Popen(shlex.split(cmd), env=full_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+@APP.post("/ingest/upload")
+async def ingest_upload(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+    """
+    Upload a single file and start ingestion in background.
+    Saves to data/book/<filename> and starts ingest script for that file.
+    """
+    # save file to data/book
+    filename = Path(file.filename).name
+    out_path = INGEST_UPLOAD_DIR / filename
+    # overwrite existing
+    with out_path.open("wb") as fh:
+        content = await file.read()
+        fh.write(content)
+    # build command to ingest single file; use the single-file script in backend/scripts
+    # Use PYTHONPATH=. so backend package imports work
+    cmd = f"PYTHONPATH=. python backend/scripts/ingest_book_king_faiss.py --pdf \"{out_path.resolve()}\" --chunk-tokens {settings.CHUNK_TOKENS} --overlap {settings.CHUNK_OVERLAP} --batch 64"
+    # run in background
+    _run_ingest_subprocess(cmd)
+    return {"status": "accepted", "filename": filename, "ingest_cmd": cmd}
+
+@APP.post("/ingest/dir")
+def ingest_dir(path: str, background_tasks: BackgroundTasks = None):
+    """
+    Trigger ingestion of a directory already on disk.
+    `path` is relative to repo root (e.g., 'data/book').
+    This will start `ingest_multi_docs.py` in background.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise HTTPException(status_code=400, detail=f"Path not found: {path}")
+    out_index = f"backend/db/{p.name}_faiss.index"
+    out_meta = f"backend/db/{p.name}_meta.jsonl"
+    cmd = f"PYTHONPATH=. python backend/scripts/ingest_multi_docs.py --input {p} --out-index {out_index} --out-meta {out_meta} --batch 32 --chunk-tokens {settings.CHUNK_TOKENS} --overlap {settings.CHUNK_OVERLAP} --metric l2"
+    _run_ingest_subprocess(cmd)
+    return {"status": "accepted", "path": path, "ingest_cmd": cmd}
 
 
 @APP.post("/retrieve", response_model=RetrieveResponse)
