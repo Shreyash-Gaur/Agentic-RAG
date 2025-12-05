@@ -9,7 +9,7 @@ WriterAgent
 from typing import List, Dict, Any, Optional
 import logging
 import os
-from tools.ollama_client import OllamaClient
+from backend.tools.ollama_client import OllamaClient
 
 log = logging.getLogger("agentic-rag.writer")
 
@@ -55,4 +55,3 @@ class WriterAgent:
             log.exception("WriterAgent generation failed: %s", e)
             # fallback: return prompt so caller can run alternate generation
             return {"answer": None, "prompt": prompt, "success": False, "error": str(e)}
-
