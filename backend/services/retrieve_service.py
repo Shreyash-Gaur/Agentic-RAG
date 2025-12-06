@@ -195,7 +195,7 @@ class RetrieveService:
                     continue
                 candidates.append(self._build_result_record(int(idx), float(dist)))
             try:
-                reranked = self.reranker.rerank_results(query, candidates, top_k=top_k)
+                reranked = self.reranker.rerank(query, candidates, top_k=top_k)
                 return reranked
             except Exception:
                 logger.exception("Reranker failed, falling back to original scores")
