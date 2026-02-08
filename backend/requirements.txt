@@ -6,6 +6,11 @@ pydantic-settings>=2.0.0
 python-dotenv>=1.0.0
 python-multipart>=0.0.7
 
+# Agentic Frameworks
+langgraph
+langchain
+langchain-ollama
+
 # AI & Data Processing
 torch>=2.0.0 --index-url https://download.pytorch.org/whl/cpu
 sentence-transformers>=2.2.0

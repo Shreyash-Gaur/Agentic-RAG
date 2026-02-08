@@ -1,6 +1,3 @@
-# backend/agents/__init__.py
-from .researcher_agent import ResearcherAgent
-from .writer_agent import WriterAgent
-from .rag_agent import RAGAgent
+from .graph_agent import GraphRAGAgent
 
-__all__ = ["ResearcherAgent", "WriterAgent", "RAGAgent"]
+__all__ = ["GraphRAGAgent"]
