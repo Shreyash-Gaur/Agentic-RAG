@@ -21,22 +21,18 @@ from backend.services.embed_cache_service import EmbedCacheService
 from backend.services.memory_service import MemoryService
 from backend.tools.ollama_client import OllamaClient
 
-# --- Agents (NEW) ---
-from backend.agents.graph_agent import GraphRAGAgent  # <--- CHANGED THIS
+# --- Agents ---
+from backend.agents.graph_agent import GraphRAGAgent
 
 # --- Models ---
 from backend.models.request_models import QueryRequest, RetrieveRequest
 from backend.models.response_models import QueryResponse, RetrieveResponse, DocumentResult
 
-# ------------------------------
-# Setup
-# ------------------------------
 setup_logging()
 logger = logging.getLogger("agentic-rag")
 
 APP = FastAPI(title=settings.API_TITLE, version=settings.API_VERSION)
 
-# CORS
 APP.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -45,21 +41,15 @@ APP.add_middleware(
     allow_headers=["*"],
 )
 
-# Global Service Instances
 retrieve_service: Optional[RetrieveService] = None
 embed_cache: Optional[EmbedCacheService] = None
 memory_service: Optional[MemoryService] = None
 ollama_client: Optional[OllamaClient] = None
-
-# Global Agent Instance
-rag_agent: Optional[GraphRAGAgent] = None  # <--- CHANGED THIS TYPE
+rag_agent: Optional[GraphRAGAgent] = None
 
 
 @APP.on_event("startup")
 def startup_event():
-    """
-    Initialize services and the Graph Agent.
-    """
     global memory_service, embed_cache, retrieve_service, ollama_client
     global rag_agent
 
@@ -84,7 +74,7 @@ def startup_event():
     except Exception as e:
         logger.exception(f"Failed to init EmbedCacheService: {e}")
 
-    # 3. Reranker (Lazy loaded inside RetrieveService if passed)
+    # 3. Reranker
     reranker_obj = None
     if settings.RERANKER_ENABLED:
         try:
@@ -94,7 +84,7 @@ def startup_event():
         except Exception as e:
             logger.exception(f"Failed to load reranker: {e}")
 
-    # 4. Ollama Client (Still needed for basic checks, though GraphAgent has its own)
+    # 4. Ollama Client
     try:
         ollama_client = OllamaClient(base_url=settings.OLLAMA_BASE_URL)
         logger.info(f"Ollama client ready at {settings.OLLAMA_BASE_URL}")
@@ -107,7 +97,7 @@ def startup_event():
             index_path=settings.FAISS_INDEX_PATH,
             meta_path=settings.FAISS_META_PATH,
             embed_cache=embed_cache,
-            embedder=None,  # Uses default Embedder internally
+            embedder=None, 
             reranker_obj=reranker_obj,
             reranker_enabled=bool(reranker_obj),
         )
@@ -115,12 +105,13 @@ def startup_event():
     except Exception as e:
         logger.exception(f"Failed to init RetrieveService: {e}")
 
-    # 6. Initialize Graph Agent (NEW)
+    # 6. Initialize Graph Agent
     if retrieve_service:
         try:
-            # We initialize the GraphRAGAgent with the service and model name
+            # --- INJECT MEMORY SERVICE HERE ---
             rag_agent = GraphRAGAgent(
                 retrieve_service=retrieve_service,
+                memory_service=memory_service,  
                 model_name=settings.OLLAMA_MODEL
             )
             logger.info("GraphRAGAgent successfully initialized.")
@@ -140,7 +131,6 @@ def shutdown_event():
             except Exception:
                 pass
 
-
 @APP.get("/health")
 def health():
     return {
@@ -150,24 +140,12 @@ def health():
         "ollama": bool(ollama_client)
     }
 
-
-# ------------------------------
-# Endpoints
-# ------------------------------
-
 @APP.post("/retrieve", response_model=RetrieveResponse)
 def retrieve_endpoint(req: RetrieveRequest):
-    """
-    Direct retrieval endpoint (bypasses Agentic reasoning).
-    """
     if not retrieve_service:
         raise HTTPException(status_code=503, detail="Retriever not initialized")
-
     try:
-        # Retrieve raw dicts
         raw_results = retrieve_service.retrieve(req.query, top_k=req.top_k)
-        
-        # Convert to Pydantic DocumentResult
         doc_results = []
         for r in raw_results:
             meta = r.get("meta", {})
@@ -191,23 +169,15 @@ def retrieve_endpoint(req: RetrieveRequest):
 
 @APP.post("/query", response_model=QueryResponse)
 def query_endpoint(req: QueryRequest):
-    """
-    Main RAG endpoint.
-    """
     if not rag_agent:
         raise HTTPException(status_code=503, detail="RAG Agent not initialized")
-
     try:
-        # Determine mode
         mode = "detailed" if req.max_tokens > 512 else "concise"
-        
-        # Pass BOTH mode and temperature
         output = rag_agent.query(
             query=req.query, 
             mode=mode, 
             temperature=req.temperature
         )
-
         return QueryResponse(
             query=req.query,
             answer=output.get("answer", "No answer generated."),
@@ -216,21 +186,15 @@ def query_endpoint(req: QueryRequest):
             prompt="",
             metadata=output.get("metadata", {})
         )
-
     except Exception as e:
         logger.exception(f"Agent Query failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ------------------------------
-# Ingestion Endpoints
-# ------------------------------
 INGEST_UPLOAD_DIR = Path("data")
 INGEST_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 def _run_ingest_subprocess(cmd_list: List[str], env: Optional[Dict[str, str]] = None, log_prefix: str = "ingest") -> Dict[str, str]:
-    repo_root = Path(__file__).resolve().parents[1] # Adjusted to point to root correctly
-    # If this file is in backend/main.py, parents[0]=backend, parents[1]=root
-    
+    repo_root = Path(__file__).resolve().parents[1] 
     log_dir = repo_root / "logs" / "ingests"
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -245,13 +209,10 @@ def _run_ingest_subprocess(cmd_list: List[str], env: Optional[Dict[str, str]] = 
 
     out_f = open(out_log, "ab")
     err_f = open(err_log, "ab")
-
-    # Ensure pythonpath includes the root
     if "PYTHONPATH" not in full_env:
         full_env["PYTHONPATH"] = str(repo_root)
 
     p = subprocess.Popen(cmd_list, env=full_env, stdout=out_f, stderr=err_f, start_new_session=True)
-
     return {"pid": p.pid, "out_log": str(out_log), "err_log": str(err_log), "cmd": cmd_str}
 
 @APP.post("/ingest/upload")
@@ -262,7 +223,6 @@ async def ingest_upload(file: UploadFile = File(...), background_tasks: Backgrou
         content = await file.read()
         fh.write(content)
 
-    # Use the multi-doc ingestion script
     repo_root = Path(__file__).resolve().parents[1]
     script_path = repo_root / "backend" / "scripts" / "ingest_multi_docs.py"
     

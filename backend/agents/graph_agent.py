@@ -1,4 +1,4 @@
-from typing import TypedDict, List
+from typing import TypedDict, List, Optional
 from langchain_core.messages import HumanMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, END
@@ -15,12 +15,14 @@ class AgentState(TypedDict):
     retry_count: int
     mode: str
     temperature: float  
+    session_id: str 
 
 # --- THE AGENT CLASS ---
 class GraphRAGAgent:
-    def __init__(self, retrieve_service, model_name="mistral"):
+    def __init__(self, retrieve_service, memory_service=None, model_name="mistral"):
         self.retrieve_service = retrieve_service
-        self.model_name = model_name # Store model name for dynamic creation
+        self.memory_service = memory_service 
+        self.model_name = model_name 
         
         # Router and Grader need strict logic (Low Temp)
         self.json_llm = ChatOllama(model=model_name, temperature=0, format="json")
@@ -48,17 +50,32 @@ class GraphRAGAgent:
         return {"decision": decision, "steps": ["router"]}
 
     def general_conversation(self, state: AgentState):
-        prompt = f"Reply politely: {state['original_question']}"
-        # Chitchat can use the requested temperature too
+        # Fetch history for chitchat
+        history_str = ""
+        if self.memory_service and state.get("session_id"):
+            hist = self.memory_service.get_history(state["session_id"])
+            if hist:
+                history_str = "\n".join([f"{h['role'].upper()}: {h['content']}" for h in hist[-4:]])
+
+        prompt = f"""Conversation History:
+        {history_str}
+        
+        User: {state['original_question']}
+        Reply politely."""
+
         writer = ChatOllama(model=self.model_name, temperature=state["temperature"])
         res = writer.invoke([HumanMessage(content=prompt)]).content
         return {"generation": res, "steps": ["general_conversation"]}
 
     def retrieve(self, state: AgentState):
         print(f"---RETRIEVING ({state['mode']})---")
+        # Use the transformed question for retrieval
+        q_to_search = state["question"]
+        print(f"   (Searching for: '{q_to_search}')")
+        
         top_k = 8 if state["mode"] == "detailed" else 5
         try:
-            results = self.retrieve_service.retrieve(state["question"], top_k=top_k)
+            results = self.retrieve_service.retrieve(q_to_search, top_k=top_k)
             docs = [r['meta'].get('text', '') for r in results]
         except:
             docs = []
@@ -84,8 +101,29 @@ class GraphRAGAgent:
 
     def transform_query(self, state: AgentState):
         print("---TRANSFORMING QUERY---")
-        prompt = f"Rewrite search query for: {state['question']}. Output ONLY string."
+        
+        # 1. Fetch History
+        history_str = ""
+        if self.memory_service and state.get("session_id"):
+            hist = self.memory_service.get_history(state["session_id"])
+            if hist:
+                # Use last 6 turns for context
+                history_str = "\n".join([f"{h['role'].upper()}: {h['content']}" for h in hist[-6:]])
+
+        # 2. Rewrite Question
+        prompt = f"""Given the conversation history, rewrite the user's latest question to be a standalone search query.
+        Resolve any pronouns (he, she, it, they) to their actual names from the history.
+        
+        History:
+        {history_str}
+        
+        User's latest question: {state['original_question']}
+        
+        Output ONLY the rewritten query string (no quotes)."""
+        
         new_q = self.llm.invoke([HumanMessage(content=prompt)]).content.strip()
+        print(f"   (Rewritten: '{new_q}')")
+        
         return {"question": new_q, "retry_count": state["retry_count"]+1}
 
     def generate(self, state: AgentState):
@@ -93,19 +131,29 @@ class GraphRAGAgent:
         question = state["original_question"]
         context = "\n\n".join(state["documents"])
         
-        # DYNAMIC PROMPTING
+        # Memory Injection for Generation
+        history_block = ""
+        if self.memory_service and state.get("session_id"):
+            hist = self.memory_service.get_history(state["session_id"])
+            if hist:
+                history_str = "\n".join([f"{h['role'].upper()}: {h['content']}" for h in hist])
+                history_block = f"Previous Conversation:\n{history_str}\n"
+
         if state["mode"] == "detailed":
             system_prompt = "You are a comprehensive analyst. Write a detailed, in-depth response. Minimum 300 words."
         else:
             system_prompt = "You are a concise assistant. Answer directly and briefly."
 
-        # DYNAMIC TEMPERATURE
-        # We initialize the writer HERE to use the correct temperature
         writer = ChatOllama(model=self.model_name, temperature=state["temperature"])
 
         prompt = f"""{system_prompt}
-        Context: {context}
-        Question: {question}
+        
+        {history_block}
+        
+        Context: 
+        {context}
+        
+        Current Question: {question}
         Answer:"""
         
         res = writer.invoke([HumanMessage(content=prompt)]).content
@@ -115,7 +163,10 @@ class GraphRAGAgent:
     def route_decision(self, state): return state["decision"]
     def decide_to_generate(self, state):
         if not state["documents"]:
-            return "generate" if state["retry_count"] >= self.max_retries else "transform_query"
+            # If no docs found, TRY REWRITING THE QUERY FIRST
+            if state["retry_count"] < self.max_retries:
+                return "transform_query"
+            return "generate"
         return "generate"
 
     def build_graph(self):
@@ -128,17 +179,36 @@ class GraphRAGAgent:
         workflow.add_node("generate", self.generate)
 
         workflow.set_entry_point("router")
+        
+        # Logic: Router -> Vectorstore -> Transform Query (first time) -> Retrieve
+        # We force a transform first to handle "he/she" questions immediately?
+        # Alternatively, we can let Router decide. 
+        # For now, let's stick to standard flow: Router -> Retrieve. 
+        # If Retrieve fails (empty docs), it goes to Transform.
+        # BUT for "how old is he", retrieval WON'T fail (it finds Stan). 
+        # IMPROVEMENT: We should Always transform if it's a follow-up. 
+        # For simplicity, let's keep the existing flow but rely on the user to click "transform" logic 
+        # OR we can add a Conditional Edge after router to check if history exists.
+        
         workflow.add_conditional_edges("router", self.route_decision, {"chitchat":"chitchat", "vectorstore":"retrieve"})
         workflow.add_edge("retrieve", "grade_documents")
+        
+        # If grading fails, we transform.
         workflow.add_conditional_edges("grade_documents", self.decide_to_generate, {"transform_query":"transform_query", "generate":"generate"})
+        
         workflow.add_edge("transform_query", "retrieve")
         workflow.add_edge("chitchat", END)
         workflow.add_edge("generate", END)
         return workflow.compile()
 
     def query(self, query: str, mode: str = "concise", temperature: float = 0.1):
-        """Entry point that accepts mode and temperature."""
         app = self.build_graph()
+        session_id = "default_session"
+
+        # 1. Write User Turn
+        if self.memory_service:
+            self.memory_service.add_turn(session_id, "user", query)
+
         initial = {
             "question": query,
             "original_question": query,
@@ -148,7 +218,13 @@ class GraphRAGAgent:
             "steps": [],
             "generation": "",
             "mode": mode,
-            "temperature": temperature
+            "temperature": temperature,
+            "session_id": session_id
         }
         res = app.invoke(initial)
+        
+        # 2. Write Assistant Turn
+        if self.memory_service:
+            self.memory_service.add_turn(session_id, "assistant", res["generation"])
+
         return {"answer": res["generation"], "metadata": {"steps": res["steps"]}}
