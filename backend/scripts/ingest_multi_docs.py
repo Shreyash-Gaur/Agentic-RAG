@@ -15,9 +15,9 @@ Features:
 
 Example:
   python backend/scripts/ingest_multi_docs.py \
-    --input data/book \
-    --out-index backend/db/multi_faiss.index \
-    --out-meta backend/db/multi_meta.jsonl \
+    --input data \
+    --out-index backend/db/data_faiss.index \
+    --out-meta backend/db/data_meta.jsonl \
     --batch 64 --chunk-tokens 512 --overlap 128 --metric cosine
 
 """
@@ -156,8 +156,8 @@ def append_to_index(orig_index: Optional[faiss.Index], vectors: np.ndarray, metr
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", "-i", required=True, help="Input file or directory (PDFs / .txt)")
-    parser.add_argument("--out-index", default="backend/db/multi_faiss.index", help="Output FAISS index path")
-    parser.add_argument("--out-meta", default="backend/db/multi_meta.jsonl", help="Output metadata jsonl path")
+    parser.add_argument("--out-index", default="backend/db/data_faiss.index", help="Output FAISS index path")
+    parser.add_argument("--out-meta", default="backend/db/data_meta.jsonl", help="Output metadata jsonl path")
     parser.add_argument("--chunk-tokens", type=int, default=512)
     parser.add_argument("--overlap", type=int, default=128)
     parser.add_argument("--batch", type=int, default=64, help="Embedding batch size")

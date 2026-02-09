@@ -6,7 +6,7 @@ Polls a directory every N seconds and ingests newly added files by running
 the multi-doc ingest script (ingest_multi_docs.py).
 
 Usage:
-  python backend/scripts/ingest_watch.py --watch data/book --interval 10
+  python backend/scripts/ingest_watch.py --watch data --interval 10
 """
 from __future__ import annotations
 import argparse, time, sys, os, shlex, subprocess
@@ -24,13 +24,13 @@ def run_ingest_file(path: Path):
     repo_root = Path(__file__).resolve().parents[2]
     
     # We use the same index/meta paths defined in your .env / config
-    # (Defaults to backend/db/book_king_faiss.index)
+    # (Defaults to backend/db/data_faiss.index)
     cmd_list = [
         sys.executable,
         str(repo_root / "backend" / "scripts" / "ingest_multi_docs.py"),
         "--input", str(path.resolve()),
-        "--out-index", "backend/db/book_king_faiss.index",
-        "--out-meta", "backend/db/book_king_meta.jsonl",
+        "--out-index", "backend/db/data_faiss.index",
+        "--out-meta", "backend/db/data_meta.jsonl",
         "--chunk-tokens", "512",
         "--overlap", "128",
         "--batch", "32",
@@ -61,7 +61,7 @@ def find_files(dirpath: Path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--watch", default="data/book")
+    parser.add_argument("--watch", default="data")
     parser.add_argument("--interval", type=int, default=10)
     args = parser.parse_args()
 

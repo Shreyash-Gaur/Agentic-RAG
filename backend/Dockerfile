@@ -18,7 +18,7 @@ RUN chmod +x entrypoint.sh
 
 # Create necessary folders
 RUN mkdir -p backend/db
-RUN mkdir -p data/book
+RUN mkdir -p data
 
 EXPOSE 8000
 

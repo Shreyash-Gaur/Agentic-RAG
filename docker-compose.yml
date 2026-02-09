@@ -13,8 +13,8 @@ services:
       - ./backend/db:/app/backend/db
       
       # 2. THE DROP ZONE: Map your local folder to the container
-      # Now, any file you put in 'data/book' on your laptop appears inside Docker
-      - ./data/book:/app/data/book
+      # Now, any file you put in 'data' on your laptop appears inside Docker
+      - ./data:/app/data
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
     extra_hosts:

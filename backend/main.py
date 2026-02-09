@@ -224,7 +224,7 @@ def query_endpoint(req: QueryRequest):
 # ------------------------------
 # Ingestion Endpoints
 # ------------------------------
-INGEST_UPLOAD_DIR = Path("data/book")
+INGEST_UPLOAD_DIR = Path("data")
 INGEST_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 def _run_ingest_subprocess(cmd_list: List[str], env: Optional[Dict[str, str]] = None, log_prefix: str = "ingest") -> Dict[str, str]:

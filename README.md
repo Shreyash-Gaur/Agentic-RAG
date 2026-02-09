@@ -146,7 +146,7 @@ docker-compose up --build
 
 ### Ingesting Knowledge
 
-To make the agent "smart," simply drop PDF or Text files into the `data/book` directory. The system automatically:
+To make the agent "smart," simply drop PDF or Text files into the `data` directory. The system automatically:
 
 1. Detects the new file.
 2. Chunks text (512 tokens with overlap).

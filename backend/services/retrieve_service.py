@@ -27,8 +27,8 @@ from backend.tools.retriever_faiss import FAISSRetriever  # fallback usage / san
 logger = logging.getLogger("agentic-rag.retrieve")
 
 # Default paths (from config if available)
-DEFAULT_INDEX = settings.FAISS_INDEX_PATH if hasattr(settings, "FAISS_INDEX_PATH") else "backend/db/book_king_faiss.index"
-DEFAULT_META = settings.FAISS_META_PATH if hasattr(settings, "FAISS_META_PATH") else "backend/db/book_king_meta.jsonl"
+DEFAULT_INDEX = settings.FAISS_INDEX_PATH if hasattr(settings, "FAISS_INDEX_PATH") else "backend/db/data_faiss.index"
+DEFAULT_META = settings.FAISS_META_PATH if hasattr(settings, "FAISS_META_PATH") else "backend/db/data_meta.jsonl"
 DEFAULT_EMBED_MODEL = settings.EMBEDDING_MODEL if hasattr(settings, "EMBEDDING_MODEL") else "mxbai-embed-large:latest"
 
 

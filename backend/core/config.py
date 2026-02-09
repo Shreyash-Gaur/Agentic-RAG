@@ -45,8 +45,8 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 128
 
     # Paths
-    FAISS_INDEX_PATH: str = "backend/db/book_king_faiss.index"
-    FAISS_META_PATH: str = "backend/db/book_king_meta.jsonl"
+    FAISS_INDEX_PATH: str = "backend/db/data_faiss.index"
+    FAISS_META_PATH: str = "backend/db/data_meta.jsonl"
 
     # Memory & cache
     MEMORY_DB_PATH: str = "backend/db/memory_store.sqlite"

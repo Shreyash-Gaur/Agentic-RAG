@@ -3,7 +3,7 @@
 Convert metadata JSONL -> SQLite metadata_store.db
 
 Usage:
-  python backend/scripts/convert_meta_to_sqlite.py --meta backend/db/book_king_meta.jsonl --out backend/db/metadata_store.db
+  python backend/scripts/convert_meta_to_sqlite.py --meta backend/db/data_meta.jsonl --out backend/db/metadata_store.db
 """
 from __future__ import annotations
 import argparse, json, sqlite3
