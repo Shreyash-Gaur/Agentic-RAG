@@ -148,6 +148,10 @@ class GraphRAGAgent:
 
         prompt = f"""{system_prompt}
         
+        You are a faithful assistant. You MUST answer the question using ONLY the information provided in the Context below.
+        If the Context does not contain the answer, say "I cannot find the answer in the document."
+        DO NOT use your own outside knowledge.
+
         {history_block}
         
         Context: 
