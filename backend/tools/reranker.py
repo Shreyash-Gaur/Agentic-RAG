@@ -29,7 +29,7 @@ class CrossEncoderReranker:
             return np.zeros(0, dtype=np.float32)
 
         # --- ADDED LOGGING HERE ---
-        print(f"\n--- [RERANKER] Scoring {len(docs)} docs ---")
+        print(f"--- [RERANKER] Scoring {len(docs)} docs ---")
         
         pairs = [(query, d) for d in docs]
         scores = self.model.predict(
