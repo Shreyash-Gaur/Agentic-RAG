@@ -28,12 +28,20 @@ class CrossEncoderReranker:
         if not docs:
             return np.zeros(0, dtype=np.float32)
 
+        # --- ADDED LOGGING HERE ---
+        print(f"\n--- [RERANKER] Scoring {len(docs)} docs ---")
+        
         pairs = [(query, d) for d in docs]
         scores = self.model.predict(
             pairs,
             batch_size=batch_size,
             show_progress_bar=False
         )
+        
+        # --- ADDED LOGGING HERE ---
+        if len(scores) > 0:
+            print(f"--- [RERANKER] Top Score: {np.max(scores):.4f} ---")
+            
         return np.asarray(scores, dtype=np.float32)
 
     def rerank(self, query: str, results: List[Dict], top_k: int):
