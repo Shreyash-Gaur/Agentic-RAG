@@ -56,5 +56,6 @@ dist/
 build/
 *.egg-info/
 
-# Chainlit (if used)
+# Chainlit
 .chainlit/
+!requirements.txt
