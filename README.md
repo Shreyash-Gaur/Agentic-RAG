@@ -93,8 +93,7 @@ A modular "Clean Architecture" approach ensures maintainability.
 │   └── main.py          # FastAPI Entrypoint
 ├── frontend/
 │   └── chainlit_app.py  # UI Logic
-├── data/
-│   └── book/            # Ingestion drop-zone for PDFs/Text
+├── data/                # Ingestion drop-zone for PDFs/Text
 ├── docker-compose.yml   # Infrastructure orchestration
 └── requirements.txt     # Python dependencies
 
