@@ -17,7 +17,7 @@ COPY backend/entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
 # Create necessary folders
-RUN mkdir -p backend/db
+RUN mkdir -p backend/db/vector_data backend/db/memory backend/db/emb_cache
 RUN mkdir -p data
 
 EXPOSE 8000
