@@ -24,13 +24,13 @@ def run_ingest_file(path: Path):
     repo_root = Path(__file__).resolve().parents[2]
     
     # We use the same index/meta paths defined in your .env / config
-    # (Defaults to backend/db/data_faiss.index)
+    # (Defaults to backend/db/vector_data/data_faiss.index)
     cmd_list = [
         sys.executable,
         str(repo_root / "backend" / "scripts" / "ingest_multi_docs.py"),
         "--input", str(path.resolve()),
-        "--out-index", "backend/db/data_faiss.index",
-        "--out-meta", "backend/db/data_meta.jsonl",
+        "--out-index", "backend/db/vector_data/data_faiss.index",
+        "--out-meta", "backend/db/vector_data/data_meta.jsonl",
         "--chunk-tokens", "512",
         "--overlap", "128",
         "--batch", "32",
