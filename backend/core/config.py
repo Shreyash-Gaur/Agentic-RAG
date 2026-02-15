@@ -34,30 +34,46 @@ class Settings(BaseSettings):
     # Raw string for CORS; use settings.CORS property to get parsed list
     CORS_ORIGINS: Optional[str] = None
 
-    # Ollama / Embedding (your chosen defaults)
+    # Ollama / Embedding
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    OLLAMA_MODEL: str = "mistral:latest"
-    EMBEDDING_MODEL: str = "nomic-embed-text"
+    OLLAMA_MODEL: str = "phi4-mini:latest"
+    EMBEDDING_MODEL: str = "mxbai-embed-large:latest"
 
-    # RAG Behavior
-    TOP_K_RETRIEVAL: int = 5
+    # Vector / General RAG Behavior
+    MAX_TOKENS: int = 512
+    MAX_ITERATIONS: int = 6
+    TOP_K_RETRIEVAL: int = 4
+    
+    # Vector Chunking
     CHUNK_TOKENS: int = 512
     CHUNK_OVERLAP: int = 128
+    EMBEDDING_BATCH_SIZE: int = 32
+
+    # Watcher folder
+    WATCH_DIR: str = "knowledge"
 
     # Paths
-    FAISS_INDEX_PATH: str = "backend/db/vector_data/data_faiss.index"
-    FAISS_META_PATH: str = "backend/db/vector_data/data_meta.jsonl"
+    FAISS_INDEX_PATH: str = "backend/db/vector_data/knowledge_faiss.index"
+    FAISS_META_PATH: str = "backend/db/vector_data/knowledge_meta.jsonl"
+    META_DB_PATH: str = "backend/db/vector_data/metadata_store.db"
 
     # Memory & cache
     MEMORY_DB_PATH: str = "backend/db/memory/memory_store.sqlite"
-    EMBEDDING_CACHE_DB: str = "backend/db/emb_cache/embed_cache.sqlite"
-    MEMORY_MAX_TURNS: int = 20
+    EMBEDDING_CACHE_DB: str = "backend/db/embedding_cache/embed_cache.sqlite"
+    MEMORY_MAX_TURNS: int = 100
 
-    # Reranker
+    # Semantic Cache (Added from backend_graph)
+    SEMANTIC_CACHE_MODEL: str = "BAAI/bge-large-en-v1.5"
+    SEMANTIC_CACHE_THRESHOLD: float = 0.80
+
+    # Reranker (Synced with backend_graph)
     RERANKER_ENABLED: bool = True
-    RERANKER_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    RERANKER_INITIAL_K: int = 20
+    RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
+    RERANKER_INITIAL_K: int = 14
 
+    # HyDe (Added from backend_graph)
+    USE_HYDE: bool = True
+    
     # Chainlit
     CHAINLIT_ENABLED: bool = True
 

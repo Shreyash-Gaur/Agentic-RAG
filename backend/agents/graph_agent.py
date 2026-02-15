@@ -1,13 +1,17 @@
 from typing import TypedDict, List, Optional
-from langchain_core.messages import HumanMessage
+from backend.core.config import settings
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, END
+from backend.tools.query_expander import generate_hyde_document
+from backend.tools.calculator import calculate
 import json
 
 # --- STATE DEFINITION ---
 class AgentState(TypedDict):
     question: str
     original_question: str
+    chat_history: str  
     documents: List[str]
     decision: str
     generation: str
@@ -15,20 +19,16 @@ class AgentState(TypedDict):
     retry_count: int
     mode: str
     temperature: float  
-    session_id: str 
+    max_tokens: int
 
 # --- THE AGENT CLASS ---
 class GraphRAGAgent:
-    def __init__(self, retrieve_service, memory_service=None, model_name="mistral"):
+    def __init__(self, retrieve_service, model_name=settings.OLLAMA_MODEL):
         self.retrieve_service = retrieve_service
-        self.memory_service = memory_service 
         self.model_name = model_name 
-        
-        # Router and Grader need strict logic (Low Temp)
         self.json_llm = ChatOllama(model=model_name, temperature=0, format="json")
         self.llm = ChatOllama(model=model_name, temperature=0)
-        
-        self.max_retries = 3
+        self.max_retries = settings.MAX_ITERATIONS
 
     # --- NODES ---
 
@@ -36,6 +36,8 @@ class GraphRAGAgent:
         """Decides flow based on question."""
         print("---ROUTING QUESTION---")
         question = state.get("original_question", state["question"])
+        
+        # Simple routing prompt
         prompt = f"""You are a router. 
         1. If user asks for info/facts/summary, output 'vectorstore'.
         2. If user says hi/hello/thanks, output 'chitchat'.
@@ -50,46 +52,53 @@ class GraphRAGAgent:
         return {"decision": decision, "steps": ["router"]}
 
     def general_conversation(self, state: AgentState):
-        # Fetch history for chitchat
-        history_str = ""
-        if self.memory_service and state.get("session_id"):
-            hist = self.memory_service.get_history(state["session_id"])
-            if hist:
-                history_str = "\n".join([f"{h['role'].upper()}: {h['content']}" for h in hist[-4:]])
-
-        prompt = f"""Conversation History:
-        {history_str}
+        prompt = f"""
+        Previous Chat History:
+        {state.get('chat_history', '')}
         
         User: {state['original_question']}
-        Reply politely."""
-
+        Reply politely and conversationally."""
+        
         writer = ChatOllama(model=self.model_name, temperature=state["temperature"])
         res = writer.invoke([HumanMessage(content=prompt)]).content
         return {"generation": res, "steps": ["general_conversation"]}
 
     def retrieve(self, state: AgentState):
+        """
+        Standard Vector Retrieval (No Neo4j Graph).
+        """
         print(f"---RETRIEVING ({state['mode']})---")
-        # Use the transformed question for retrieval
-        q_to_search = state["question"]
-        print(f"   (Searching for: '{q_to_search}')")
-        
-        top_k = 8 if state["mode"] == "detailed" else 5
+        base_k = settings.TOP_K_RETRIEVAL
+        top_k = int(base_k * 2) if state["mode"] == "detailed" else base_k
         try:
-            results = self.retrieve_service.retrieve(q_to_search, top_k=top_k)
-            docs = [r['meta'].get('text', '') for r in results]
-        except:
+            search_query = state["question"]
+            
+            # Optional Upgrade: Add HyDE context if enabled
+            if settings.USE_HYDE:
+                hyde_context = generate_hyde_document(state["question"])
+                search_query = state["question"] + "\n\n" + hyde_context
+                
+            # Perform standard search and extract text from metadata
+            raw_docs = self.retrieve_service.retrieve(search_query, top_k=top_k)
+            docs = [d.get("meta", {}).get("text", "") for d in raw_docs if "meta" in d]
+            
+        except Exception as e:
+            print(f"Retrieval error: {e}")
             docs = []
+            
         return {"documents": docs, "steps": ["retrieve"]}
 
     def grade_documents(self, state: AgentState):
         print("---GRADING---")
         if not state["documents"]: return {"documents": []}
         
-        doc_txt = "\n\n".join([f"[{i}] {d}" for i, d in enumerate(state["documents"])])
+        doc_txt = "\n\n".join([f"[{i}] {d[:300]}..." for i, d in enumerate(state["documents"])])
+        
         prompt = f"""Identify relevant docs for: {state['question']}
         Docs:
         {doc_txt}
-        Return JSON {{ "indices": [0, 2...] }} of relevant docs containing ACTUAL content."""
+        Return JSON {{ "indices": [0, 2...] }} of relevant docs containing ACTUAL content.
+        If you are unsure, include the document."""
         
         try:
             res = self.json_llm.invoke([HumanMessage(content=prompt)])
@@ -101,76 +110,89 @@ class GraphRAGAgent:
 
     def transform_query(self, state: AgentState):
         print("---TRANSFORMING QUERY---")
+        prompt = f"""
+        Context: {state.get('chat_history', '')}
+        User Question: {state['question']}
         
-        # 1. Fetch History
-        history_str = ""
-        if self.memory_service and state.get("session_id"):
-            hist = self.memory_service.get_history(state["session_id"])
-            if hist:
-                # Use last 6 turns for context
-                history_str = "\n".join([f"{h['role'].upper()}: {h['content']}" for h in hist[-6:]])
-
-        # 2. Rewrite Question
-        prompt = f"""Given the conversation history, rewrite the user's latest question to be a standalone search query.
-        Resolve any pronouns (he, she, it, they) to their actual names from the history.
-        
-        History:
-        {history_str}
-        
-        User's latest question: {state['original_question']}
-        
-        Output ONLY the rewritten query string (no quotes)."""
+        Rewrite the user question to be standalone and search-friendly. Replace pronouns (he/she/it) with specific names from context if possible.
+        Output ONLY the string."""
         
         new_q = self.llm.invoke([HumanMessage(content=prompt)]).content.strip()
-        print(f"   (Rewritten: '{new_q}')")
-        
         return {"question": new_q, "retry_count": state["retry_count"]+1}
 
     def generate(self, state: AgentState):
-        print(f"---GENERATING ({state['mode'].upper()} | Temp: {state['temperature']})---")
+        print(f"---GENERATING ({state['mode'].upper()} | Tokens: {state['max_tokens']})---")
         question = state["original_question"]
         context = "\n\n".join(state["documents"])
+        history = state.get("chat_history", "")
+        token_limit = state.get("max_tokens", settings.MAX_TOKENS)        
         
-        # Memory Injection for Generation
-        history_block = ""
-        if self.memory_service and state.get("session_id"):
-            hist = self.memory_service.get_history(state["session_id"])
-            if hist:
-                history_str = "\n".join([f"{h['role'].upper()}: {h['content']}" for h in hist])
-                history_block = f"Previous Conversation:\n{history_str}\n"
-
         if state["mode"] == "detailed":
-            system_prompt = "You are a comprehensive analyst. Write a detailed, in-depth response. Minimum 300 words."
+            system_prompt = (
+                f"You are a comprehensive AI analyst. "
+                f"Please provide a detailed, extensive answer using up to {token_limit} tokens if necessary. "
+                "Cover all aspects of the context provided. Do NOT output raw JSON or mention your tools unless you are actively using them."
+            )
         else:
-            system_prompt = "You are a concise assistant. Answer directly and briefly."
+            system_prompt = "You are a concise assistant. Answer directly and briefly. Do not output JSON."
+        
+        # REMOVED the hardcoded math prompt here, let Langchain's bind_tools handle the instruction natively.
+        
+        writer = ChatOllama(
+            model=self.model_name, 
+            temperature=state["temperature"],
+            num_predict=token_limit
+        )
 
-        writer = ChatOllama(model=self.model_name, temperature=state["temperature"])
-
+        writer_with_tools = writer.bind_tools([calculate])
         prompt = f"""{system_prompt}
         
-        You are a faithful assistant. You MUST answer the question using ONLY the information provided in the Context below.
-        If the Context does not contain the answer, say "I cannot find the answer in the document."
-        DO NOT use your own outside knowledge.
-
-        {history_block}
-        
-        Context: 
+        Relevant Context:
         {context}
         
-        Current Question: {question}
+        Chat History:
+        {history}
+        
+        Question: {question}
         Answer:"""
         
-        res = writer.invoke([HumanMessage(content=prompt)]).content
+        messages = [HumanMessage(content=prompt)]
+        
+        # First pass checking if tool needs to be called
+        response = writer_with_tools.invoke(messages)
+        
+        if response.tool_calls:
+            messages.append(response) 
+            
+            for tool_call in response.tool_calls:
+                if tool_call["name"] == "calculate":
+                    math_expression = tool_call["args"].get("expression", "")
+                    print(f"🛠️ LLM called Calculator for: {math_expression}")
+                    
+                    try:
+                        math_result = calculate.invoke(tool_call["args"])
+                        print(f"🧮 Calculator returned: {math_result}")
+                        messages.append(ToolMessage(content=str(math_result), tool_call_id=tool_call["id"]))
+                    except Exception as e:
+                        print(f"🧮 Calculator failed: {e}")
+                        messages.append(ToolMessage(content="Math calculation failed.", tool_call_id=tool_call["id"]))
+            
+            # Second pass after tool generates output
+            response = writer_with_tools.invoke(messages)
+        
+        # Cleanup any hallucinated JSON that leaked into the final text
+        res = response.content
+        if "```json" in res and "calculate" in res:
+            res = res.split("```json")[0].strip()
+            
         return {"generation": res, "steps": ["generate"]}
 
     # --- EDGES & GRAPH ---
     def route_decision(self, state): return state["decision"]
+    
     def decide_to_generate(self, state):
         if not state["documents"]:
-            # If no docs found, TRY REWRITING THE QUERY FIRST
-            if state["retry_count"] < self.max_retries:
-                return "transform_query"
-            return "generate"
+            return "generate" if state["retry_count"] >= self.max_retries else "transform_query"
         return "generate"
 
     def build_graph(self):
@@ -183,39 +205,20 @@ class GraphRAGAgent:
         workflow.add_node("generate", self.generate)
 
         workflow.set_entry_point("router")
-        
-        # Logic: Router -> Vectorstore -> Transform Query (first time) -> Retrieve
-        # We force a transform first to handle "he/she" questions immediately?
-        # Alternatively, we can let Router decide. 
-        # For now, let's stick to standard flow: Router -> Retrieve. 
-        # If Retrieve fails (empty docs), it goes to Transform.
-        # BUT for "how old is he", retrieval WON'T fail (it finds Stan). 
-        # IMPROVEMENT: We should Always transform if it's a follow-up. 
-        # For simplicity, let's keep the existing flow but rely on the user to click "transform" logic 
-        # OR we can add a Conditional Edge after router to check if history exists.
-        
         workflow.add_conditional_edges("router", self.route_decision, {"chitchat":"chitchat", "vectorstore":"retrieve"})
         workflow.add_edge("retrieve", "grade_documents")
-        
-        # If grading fails, we transform.
         workflow.add_conditional_edges("grade_documents", self.decide_to_generate, {"transform_query":"transform_query", "generate":"generate"})
-        
         workflow.add_edge("transform_query", "retrieve")
         workflow.add_edge("chitchat", END)
         workflow.add_edge("generate", END)
         return workflow.compile()
 
-    def query(self, query: str, mode: str = "concise", temperature: float = 0.1):
+    def query(self, query: str, mode: str = "concise", temperature: float = 0.1, max_tokens: int = settings.MAX_TOKENS, chat_history: str = ""):
         app = self.build_graph()
-        session_id = "default_session"
-
-        # 1. Write User Turn
-        if self.memory_service:
-            self.memory_service.add_turn(session_id, "user", query)
-
         initial = {
             "question": query,
             "original_question": query,
+            "chat_history": chat_history,
             "documents": [],
             "decision": "vectorstore",
             "retry_count": 0,
@@ -223,12 +226,7 @@ class GraphRAGAgent:
             "generation": "",
             "mode": mode,
             "temperature": temperature,
-            "session_id": session_id
+            "max_tokens": max_tokens
         }
         res = app.invoke(initial)
-        
-        # 2. Write Assistant Turn
-        if self.memory_service:
-            self.memory_service.add_turn(session_id, "assistant", res["generation"])
-
         return {"answer": res["generation"], "metadata": {"steps": res["steps"]}}

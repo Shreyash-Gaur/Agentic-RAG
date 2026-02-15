@@ -3,7 +3,7 @@
 # 1. Start the Watcher in the background (&)
 # We log its output to a separate file so it doesn't clutter the main logs too much
 echo "Starting File Watcher on /app/data..."
-python backend/scripts/ingest_watch.py --watch data --interval 10 > /app/watcher.log 2>&1 &
+python backend/scripts/ingest_vector_watch.py --watch knowledge --interval 10 > /app/watcher.log 2>&1 &
 
 # 2. Start the Main API Server (Uvicorn)
 echo "Starting Uvicorn Server..."

@@ -157,14 +157,14 @@ def append_to_index(orig_index: Optional[faiss.Index], vectors: np.ndarray, metr
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", "-i", required=True, help="Input file or directory (PDFs / .txt)")
-    parser.add_argument("--out-index", default="backend/db/vector_data/data_faiss.index", help="Output FAISS index path")
-    parser.add_argument("--out-meta", default="backend/db/vector_data/data_meta.jsonl", help="Output metadata jsonl path")
+    parser.add_argument("--out-index", default="backend/db/vector_data/knowledge_faiss.index", help="Output FAISS index path")
+    parser.add_argument("--out-meta", default="backend/db/vector_data/knowledge_meta.jsonl", help="Output metadata jsonl path")
     parser.add_argument("--chunk-tokens", type=int, default=512)
     parser.add_argument("--overlap", type=int, default=128)
     parser.add_argument("--batch", type=int, default=64, help="Embedding batch size")
     parser.add_argument("--metric", choices=["l2","cosine"], default="l2", help="Distance metric for FAISS; cosine uses IndexFlatIP with normalized vectors")
     parser.add_argument("--embed-model", default=None, help="Embedder model override (env default used if not set)")
-    parser.add_argument("--cache-db", default="backend/db/emb_cache/embed_cache.sqlite", help="Embed cache sqlite path")
+    parser.add_argument("--cache-db", default="backend/db/embedding_cache/embed_cache.sqlite", help="Embed cache sqlite path")
     parser.add_argument("--append", action="store_true", help="Append to existing index/meta instead of overwriting")
     args = parser.parse_args()
 

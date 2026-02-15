@@ -1,55 +1,46 @@
-# backend/tools/reranker.py
-import os
-import numpy as np
-from typing import List, Dict
-from sentence_transformers import CrossEncoder
-import torch
+import logging
+from typing import List, Dict, Any
 
+from backend.core.config import settings
 
-class CrossEncoderReranker:
-    """
-    GPU-accelerated Cross-Encoder Reranker.
-    Uses MS MARCO MiniLM cross-encoder (accurate + fast).
-    """
+logger = logging.getLogger("agentic-rag.reranker")
 
-    def __init__(self, model_name: str = None, device: str = None):
-        self.model_name = model_name or os.getenv(
-            "RERANKER_MODEL",
-            "cross-encoder/ms-marco-MiniLM-L-6-v2"
-        )
-
-        # auto-select GPU if available
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-
-        print(f"[RERANKER] Loading {self.model_name} on device={self.device}")
-        self.model = CrossEncoder(self.model_name, device=self.device)
-
-    def score(self, query: str, docs: List[str], batch_size: int = 16) -> np.ndarray:
-        if not docs:
-            return np.zeros(0, dtype=np.float32)
-
-        # --- ADDED LOGGING HERE ---
-        print(f"--- [RERANKER] Scoring {len(docs)} docs ---")
-        
-        pairs = [(query, d) for d in docs]
-        scores = self.model.predict(
-            pairs,
-            batch_size=batch_size,
-            show_progress_bar=False
-        )
-        
-        # --- ADDED LOGGING HERE ---
-        if len(scores) > 0:
-            print(f"--- [RERANKER] Top Score: {np.max(scores):.4f} ---")
+class Reranker:
+    def __init__(self, model_name: str = settings.RERANKER_MODEL):
+        self.model_name = model_name
+        self.enabled = settings.RERANKER_ENABLED
+        if self.enabled:
+            try:
+                from FlagEmbedding import FlagReranker
+                logger.info(f"Loading reranker model: {model_name}...")
+                self.reranker = FlagReranker(model_name, use_fp16=True)
+            except ImportError:
+                logger.warning("FlagEmbedding not installed. Reranking disabled.")
+                self.enabled = False
+                self.reranker = None
+            except Exception as e:
+                logger.error(f"Failed to load reranker: {e}")
+                self.enabled = False
+                self.reranker = None
+                
+    def rerank(self, query: str, documents: List[Dict[str, Any]], top_k: int = 5) -> List[Dict[str, Any]]:
+        if not self.enabled or not self.reranker or not documents:
+            return documents[:top_k]
             
-        return np.asarray(scores, dtype=np.float32)
-
-    def rerank(self, query: str, results: List[Dict], top_k: int):
-        texts = [r["meta"].get("text", "") for r in results]
-        scores = self.score(query, texts)
-
-        for r, s in zip(results, scores):
-            r["_rerank_score"] = float(s)
-
-        results_sorted = sorted(results, key=lambda x: x["_rerank_score"], reverse=True)
-        return results_sorted[:top_k]
+        texts = [doc.get("meta", {}).get("text", "") for doc in documents]
+        pairs = [[query, txt] for txt in texts]
+        
+        try:
+            scores = self.reranker.compute_score(pairs)
+            
+            # Tie scores back to documents
+            for i, doc in enumerate(documents):
+                doc["score"] = float(scores[i])
+                
+            # Sort by score descending
+            documents.sort(key=lambda x: x["score"], reverse=True)
+            return documents[:top_k]
+            
+        except Exception as e:
+            logger.error(f"Reranking computation failed: {e}")
+            return documents[:top_k]

@@ -6,6 +6,7 @@ from typing import List
 import numpy as np
 import json
 
+from backend.core.config import settings
 
 class Embedder:
     """
@@ -13,9 +14,9 @@ class Embedder:
     Uses /api/embeddings with the correct 'prompt' field.
     """
 
-    def __init__(self, base_url=None, model=None, timeout=200):
-        self.base_url = base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.model = model or os.getenv("EMBEDDER_MODEL", "nomic-embed-text")
+    def __init__(self, base_url=None, model=None, timeout=150):
+        self.base_url = base_url or settings.OLLAMA_BASE_URL
+        self.model = model or settings.EMBEDDING_MODEL
         self.timeout = timeout
 
         self.session = requests.Session()
@@ -44,13 +45,17 @@ class Embedder:
             if isinstance(data, dict) and "embeddings" in data:
                 return np.asarray(data["embeddings"][0], dtype=np.float32)
 
-            # Unknown shape → dump debug
+            # Unknown shape -> dump debug
             dbg = {
                 "response": data,
                 "note": "Unknown embedding response shape",
                 "text": text
             }
-            with open("backend/db/emb_cache/embed_debug.json", "w") as f:
+            # Adjusted to match the new unified path
+            debug_path = "backend/db/embedding_cache/embed_debug.json"
+            os.makedirs(os.path.dirname(debug_path), exist_ok=True)
+            
+            with open(debug_path, "w") as f:
                 json.dump(dbg, f, indent=2)
             raise RuntimeError(f"Unknown embedding response format. Saved to embed_debug.json.")
 

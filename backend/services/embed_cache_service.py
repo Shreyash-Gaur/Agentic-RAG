@@ -4,7 +4,7 @@ Embedding cache service (SQLite-backed).
 
 Usage:
     from services.embed_cache_service import EmbedCacheService
-    cache = EmbedCacheService(db_path="backend/db/emb_cache/embed_cache.sqlite")
+    cache = EmbedCacheService(db_path="backend/db/embedding_cache/embed_cache.sqlite")
     vec = cache.get_vector("hello world", model="mxbai-embed-large:latest")
     if vec is None:
         vec = embedder.embed_batch(["hello world"])[0]
@@ -20,10 +20,9 @@ import hashlib
 import logging
 from typing import Optional, List, Dict, Tuple
 import numpy as np
+from backend.core.config import settings
 
 logger = logging.getLogger("agentic-rag.embedcache")
-
-DEFAULT_DB = "backend/db/emb_cache/embed_cache.sqlite"
 
 
 def _text_model_key(text: str, model: str) -> str:
@@ -35,7 +34,7 @@ def _text_model_key(text: str, model: str) -> str:
 
 
 class EmbedCacheService:
-    def __init__(self, db_path: str = DEFAULT_DB, enable_wal: bool = True):
+    def __init__(self, db_path: str = settings.EMBEDDING_CACHE_DB, enable_wal: bool = True):
         self.db_path = db_path
         # ensure directory exists
         db_dir = os.path.dirname(os.path.abspath(self.db_path))

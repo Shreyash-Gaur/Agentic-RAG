@@ -1,7 +1,8 @@
 import logging
 import sys
 from pathlib import Path
-
+import os
+os.environ['TRANSFORMERS_NO_ADVISORY_WARNINGS'] = 'true'
 # Define log paths
 LOG_DIR = Path("backend/logs")
 LOG_DIR.mkdir(parents=True, exist_ok=True)

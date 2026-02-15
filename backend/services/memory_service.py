@@ -1,13 +1,12 @@
 # backend/services/memory_service.py
 """
 MemoryService (SQLite-backed, thread-safe)
-
 Features:
  - Keeps per-conversation history in memory for fast read.
  - Persists all turns to SQLite for durability.
  - Bounded history (max_history) kept in-memory per conversation.
  - Safe for multi-threaded FastAPI usage (uses RLock).
- - Simple API: add_turn, get_history, clear_history, export_history, import_history, close.
+ - Full API: add_turn, get_context, get_history, export/import.
 """
 
 from __future__ import annotations
@@ -18,27 +17,20 @@ import time
 import os
 import logging
 from typing import List, Dict, Optional, Any
+from backend.core.config import settings
 
 logger = logging.getLogger("agentic-rag.memory")
 
 DEFAULT_DB_PATH = "backend/db/memory/memory_store.sqlite"
 
-
 class MemoryService:
     def __init__(
         self,
-        max_history: int = 20,
+        max_history: int = settings.MEMORY_MAX_TURNS,
         use_sqlite: bool = True,
-        db_path: str = DEFAULT_DB_PATH,
+        db_path: str = settings.MEMORY_DB_PATH,
         preload: bool = True,
     ):
-        """
-        Args:
-            max_history: max number of turns to keep in-memory per conversation.
-            use_sqlite: persist turns to SQLite when True.
-            db_path: path to sqlite file.
-            preload: if True, preload existing DB rows into in-memory store on startup.
-        """
         self.max_history = int(max_history)
         self.use_sqlite = bool(use_sqlite)
         self.db_path = db_path
@@ -63,13 +55,10 @@ class MemoryService:
     # Database bootstrap
     # ---------------------------
     def _init_db(self) -> None:
-        # Connect with WAL mode for concurrency
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
-        # Enable WAL
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
-        # Create table if not exists
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS memory (
@@ -86,9 +75,6 @@ class MemoryService:
         conn.commit()
         self._conn = conn
 
-    # ---------------------------
-    # Preload DB into in-memory store
-    # ---------------------------
     def _load_all_to_memory(self) -> None:
         if not self._conn:
             return
@@ -105,15 +91,14 @@ class MemoryService:
                     "meta": json.loads(r["meta"]) if r["meta"] else {},
                 }
                 self._store.setdefault(conv_id, []).append(turn)
-            # Trim histories to max_history
             for cid, turns in list(self._store.items()):
                 if len(turns) > self.max_history:
                     self._store[cid] = turns[-self.max_history :]
 
     # ---------------------------
-    # Add turn
+    # Core Internal Helper
     # ---------------------------
-    def add_turn(
+    def _add_single_turn(
         self,
         conv_id: str,
         role: str,
@@ -121,29 +106,13 @@ class MemoryService:
         meta: Optional[Dict[str, Any]] = None,
         ts: Optional[float] = None,
     ) -> None:
-        """
-        Add a conversation turn.
-
-        Args:
-            conv_id: conversation identifier (string)
-            role: role string, e.g. "user" or "assistant"
-            content: text content of the turn
-            meta: optional dict with extra metadata (sources, scores, etc.)
-            ts: optional epoch seconds timestamp (if omitted, current time used)
-        """
         ts = float(ts or time.time())
         meta = meta or {}
-
         turn = {"ts": ts, "role": role, "content": content, "meta": meta}
 
         with self._lock:
             buf = self._store.setdefault(conv_id, [])
             buf.append(turn)
-            # trim in-memory
-            if len(buf) > self.max_history:
-                self._store[conv_id] = buf[-self.max_history :]
-
-            # persist to sqlite
             if self.use_sqlite and self._conn:
                 try:
                     cur = self._conn.cursor()
@@ -154,65 +123,61 @@ class MemoryService:
                     self._conn.commit()
                 except Exception as e:
                     logger.exception("Failed to persist memory to sqlite: %s", e)
+            if len(buf) > self.max_history:
+                self._store[conv_id] = buf[-self.max_history :]
 
     # ---------------------------
-    # Get history
+    # Public API
     # ---------------------------
-    def get_history(self, conv_id: str) -> List[Dict[str, Any]]:
-        """
-        Return the in-memory history for conv_id (most recent first preserved order).
-        """
+    def add_turn(self, session_id: str, user_input: str, ai_output: str) -> None:
+        """Saves a conversation pair (User + AI)."""
+        try:
+            self._add_single_turn(conv_id=session_id, role="user", content=user_input)
+            self._add_single_turn(conv_id=session_id, role="assistant", content=ai_output)
+            logger.info(f"Saved turn to memory for session: {session_id}")
+        except Exception as e:
+            logger.error(f"Failed to add turn pair: {e}")
+            raise e
+
+    def get_context(self, session_id: str, last_n: int = 5) -> str:
+        """Retrieves history as a formatted string for the LLM."""
         with self._lock:
-            return list(self._store.get(conv_id, []))
+            history = self._store.get(session_id, [])
+            relevant_history = history[-last_n:]
+            formatted_context = []
+            for item in relevant_history:
+                role = item.get("role", "unknown").capitalize()
+                content = item.get("content", "")
+                formatted_context.append(f"{role}: {content}")
+            return "\n".join(formatted_context)
 
     # ---------------------------
-    # Clear history
+    # Restored Utilities
     # ---------------------------
-    def clear_history(self, conv_id: str) -> None:
-        """
-        Clear in-memory and persisted history for conv_id.
-        """
+    def get_history(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return raw list of dicts (Useful for Frontend)."""
         with self._lock:
-            self._store.pop(conv_id, None)
-            if self.use_sqlite and self._conn:
-                try:
-                    cur = self._conn.cursor()
-                    cur.execute("DELETE FROM memory WHERE conv_id = ?", (conv_id,))
-                    self._conn.commit()
-                except Exception as e:
-                    logger.exception("Failed to delete memory rows: %s", e)
+            return list(self._store.get(session_id, []))
 
-    # ---------------------------
-    # Export / Import
-    # ---------------------------
-    def export_history(self, conv_id: str) -> str:
-        """
-        Return JSON string of conversation history (pretty-printed).
-        """
-        hist = self.get_history(conv_id)
+    def export_history(self, session_id: str) -> str:
+        """Return JSON string of history."""
+        hist = self.get_history(session_id)
         return json.dumps(hist, ensure_ascii=False, indent=2)
 
-    def import_history(self, conv_id: str, turns: List[Dict[str, Any]]) -> None:
-        """
-        Import a list of turns into a conversation.
-        Each turn should be a dict with keys: ts, role, content, meta (optional).
-        This will persist to DB if enabled.
-        """
+    def import_history(self, session_id: str, turns: List[Dict[str, Any]]) -> None:
+        """Bulk import turns."""
         if not isinstance(turns, list):
-            raise ValueError("turns must be a list of turn dicts")
-
+            raise ValueError("turns must be a list")
         with self._lock:
-            # replace in-memory (keep last max_history)
-            self._store[conv_id] = turns[-self.max_history :]
-
+            self._store[session_id] = turns[-self.max_history :]
             if self.use_sqlite and self._conn:
                 try:
                     cur = self._conn.cursor()
-                    for t in self._store[conv_id]:
+                    for t in self._store[session_id]:
                         cur.execute(
                             "INSERT INTO memory (conv_id, ts, role, content, meta) VALUES (?, ?, ?, ?, ?)",
                             (
-                                conv_id,
+                                session_id,
                                 float(t.get("ts", time.time())),
                                 t.get("role", ""),
                                 t.get("content", ""),
@@ -221,15 +186,19 @@ class MemoryService:
                         )
                     self._conn.commit()
                 except Exception as e:
-                    logger.exception("Failed to import history to sqlite: %s", e)
+                    logger.exception("Failed to import history: %s", e)
 
-    # ---------------------------
-    # Close
-    # ---------------------------
+    def clear_history(self, session_id: str) -> None:
+        with self._lock:
+            self._store.pop(session_id, None)
+            if self.use_sqlite and self._conn:
+                try:
+                    self._conn.execute("DELETE FROM memory WHERE conv_id = ?", (session_id,))
+                    self._conn.commit()
+                except Exception as e:
+                    logger.exception("Failed to clear memory: %s", e)
+
     def close(self) -> None:
-        """
-        Close DB connection. Call on application shutdown.
-        """
         if self._conn:
             try:
                 self._conn.close()
