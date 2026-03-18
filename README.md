@@ -1,178 +1,170 @@
+# Agentic RAG — Local Knowledge Assistant
 
-# Agentic RAG: Enterprise Knowledge Assistant
-
-> **A local-first, autonomous Retrieval Augmented Generation (RAG) system capable of complex reasoning, self-correction, and multi-document synthesis.**
-
----
-
-## 📖 Executive Summary
-
-This project implements an **Agentic RAG** architecture designed to solve the hallucination and retrieval accuracy problems common in standard RAG systems. Unlike a linear "retrieve-then-generate" pipeline, this system uses a **Cognitive Graph (State Machine)** to reason about user queries.
-
-It features a self-correcting workflow that can reject irrelevant documents, rewrite search queries, and dynamically adjust its response mode based on complexity. Built to mimic an enterprise deployment, it includes microservices architecture, vector caching, and re-ranking models for high-precision retrieval.
+> A fully local, autonomous Retrieval-Augmented Generation system with multi-step planning, self-correction, and hybrid retrieval. No cloud APIs. No data leaves the machine.
 
 ---
 
-## 🏗️ High-Level Architecture
+## Overview
 
-The core "brain" of the application is a **LangGraph State Machine** (`backend/agents/graph_agent.py`) that orchestrates the flow of data.
+Standard RAG pipelines are linear: retrieve documents, generate an answer. They have no mechanism to detect when retrieval failed, no way to ask a better question, and no ability to reason across multiple sub-queries at once.
+
+This system replaces that linear pipeline with a LangGraph state machine that plans before it retrieves, critiques its own answers, and retries with refined queries when the first attempt falls short. It is designed to handle the class of questions that single-pass RAG gets wrong — ambiguous queries, multi-part questions, and questions where the first retrieved documents are only partially relevant.
+
+---
+
+## Architecture
+
+The agent follows a planner → execute → reflect loop. The graph is compiled once at startup and reused across all requests.
 
 ```mermaid
 graph TD
-    Start([User Query]) --> Router{Router Agent}
-    
-    Router -- "Chitchat" --> ChitChat[General Conversation]
-    Router -- "Information" --> Retrieve[Vector Retrieval]
-    
-    Retrieve --> Grade{Grade Documents}
-    
-    Grade -- "Irrelevant Docs" --> Rewrite[Transform Query]
-    Rewrite --> Retrieve
-    
-    Grade -- "Relevant Docs" --> Generate[LLM Generation]
-    
-    Generate --> End([Final Response])
-    ChitChat --> End
+    classDef terminal fill:#e6f4ea,stroke:#34a853,color:#1e6830
+    classDef decision fill:#e8f0fe,stroke:#4285f4,color:#1a56b0
+    classDef agent    fill:#f3e8fd,stroke:#9334e6,color:#4a1a7a
+    classDef retrieve fill:#fef3e2,stroke:#fa7b17,color:#7a3d00
 
+    A([User Query]):::terminal  --> B{Router}:::decision
+    B -- chitchat               --> C[Chitchat]:::agent
+    B -- vectorstore            --> D[Planner]:::agent
+    C                           --> Z([END]):::terminal
+    D                           --> E[Execute Step]:::agent
+    E -- more steps             --> E
+    E -- done                   --> F[Generate]:::agent
+    F                           --> G{Reflect}:::decision
+    G -- good                   --> Z
+    G -- needs_more             --> H[Targeted Retrieve]:::retrieve
+    G -- replan                 --> D
+    H                           --> F
 ```
 
-### 🧠 Key Agentic Capabilities
+### Agent nodes
 
-* **Routing Agent:** Semantically classifies queries to avoid wasting compute on non-retrieval questions (e.g., "Hello").
-* **Relevance Grader:** An evaluator agent analyzes retrieved documents to ensure they actually contain the answer before passing them to the generator.
-* **Self-Correction:** If retrieved documents are poor, the agent **rewrites the query** and tries again (Query Transformation).
-* **Dynamic Configuration:** Automatically switches between "Concise" and "Detailed" modes based on token depth.
+The **Router** classifies the incoming query as either a chitchat message or a retrieval question. Chitchat is handled directly without touching the vector store, which avoids wasting a full retrieval-generation cycle on greetings or off-topic messages.
 
----
+The **Planner** decomposes the user question into a sequence of 1–4 tool steps at runtime. Each step has a type (`retrieve`, `calculate`, or `summarise`) and a distinct sub-query. This is the key difference from single-pass RAG — a question like "compare X and Y" is split into two independent retrieve steps with separate sub-queries, rather than being sent as one ambiguous search. If the planner's JSON output cannot be parsed, it falls back to a single retrieve step automatically.
 
-## 🚀 Key Features
+**Execute Step** runs one plan step per iteration and loops until all steps are complete. Each retrieve step embeds its own sub-query independently, so the resulting document sets are diverse rather than redundant.
 
-### 1. Advanced Retrieval Pipeline
+**Generate** assembles context from all retrieved documents and calls the writer LLM with a mode-appropriate system prompt. The calculator tool is bound at this node and invoked inline if the LLM determines arithmetic is needed.
 
-* **Hybrid Search:** Uses **FAISS** for fast similarity search combined with a **Cross-Encoder Reranker** (`ms-marco-MiniLM-L-6-v2`) to re-score the top results for maximum accuracy.
-* **Embedding Cache:** Implements SQLite-based caching (`EmbedCacheService`) to prevent redundant computation of embeddings, significantly reducing latency for frequent queries.
+**Reflect** critiques the generated answer against the retrieved context and returns one of three verdicts: `good` (proceed to END), `needs_more` (trigger a targeted retrieve with a refined query), or `replan` (restart the planner with a reformulated question). The reflection loop is capped at two rounds to prevent runaway retries.
 
-### 2. Enterprise Engineering Practices
-
-* **Microservices Design:** Decoupled Backend (FastAPI) and Frontend (Chainlit) services communicating via REST APIs.
-* **Dockerized Deployment:** Full `docker-compose` setup with volume persistence for vector indices and GPU passthrough support.
-* **Asynchronous Processing:** Heavy ingestion tasks are handled via background subprocesses to keep the API responsive.
-
-### 3. Local-First AI
-
-* **Privacy Centric:** Fully compatible with local LLMs via **Ollama** (Mistral, Llama 3). No data leaves the infrastructure.
-* **Cost Efficient:** Zero API costs using quantized local models.
+**Targeted Retrieve** runs a focused retrieval pass using the refined query produced by the reflect node, then feeds the new documents back into Generate.
 
 ---
 
-## 🛠️ Tech Stack
+## Retrieval Pipeline
 
-| Component | Technology | Description |
-| --- | --- | --- |
-| **Orchestration** | **LangGraph** & **LangChain** | State-based agent workflows and chains. |
-| **Backend API** | **FastAPI** | High-performance Async Python API. |
-| **Vector DB** | **FAISS (CPU)** | Efficient dense vector similarity search. |
-| **LLM Server** | **Ollama** | Hosting local models (Mistral, Nomic Embed). |
-| **Frontend** | **Chainlit** | React-based chat interface for Python. |
-| **Containerization** | **Docker Compose** | Multi-container orchestration. |
-| **Reranking** | **Sentence-Transformers** | Cross-encoder for result refinement. |
+Every retrieval call goes through the following sequence, regardless of which node triggered it.
+
+**HyDE (Hypothetical Document Embeddings)** — the user query is passed to the LLM, which generates a short hypothetical answer. That synthetic document is embedded instead of the raw query. The implementation detail that matters: the hypothetical document is embedded *alone*, not concatenated with the original query. Concatenation was the original bug in this codebase — it anchored the embedding to the query rather than the synthetic answer space, which defeats the entire purpose of HyDE.
+
+**FAISS vector search** — the HyDE embedding is searched against the FAISS index. In `detailed` mode, `top_k` is doubled at this stage to give the reranker a larger candidate pool to work with.
+
+**CrossEncoder reranking** — all candidates are rescored by `BAAI/bge-reranker-v2-m3`. The top document score is printed on every query, making retrieval quality directly observable in the logs without any additional tooling.
+
+**Embedding cache** — text-to-vector lookups are cached in SQLite. Identical texts are never re-embedded across requests or restarts, which meaningfully reduces latency on repeated or similar queries.
 
 ---
 
-## 📂 Project Structure
+## Semantic Cache
 
-A modular "Clean Architecture" approach ensures maintainability.
+Before the agent runs, every query is checked against a FAISS-backed semantic cache. If a sufficiently similar query has been answered before (cosine similarity ≥ 0.85 using `BAAI/bge-large-en-v1.5`), the cached answer is returned immediately without touching the LLM.
 
-```bash
-├── backend/
-│   ├── agents/          # LangGraph definitions (The "Brain")
-│   ├── core/            # Config, Logging, Exceptions
-│   ├── services/        # Business Logic (Memory, Retrieval, Cache)
-│   ├── tools/           # Low-level utilities (Ollama client, FAISS wrapper)
-│   ├── models/          # Pydantic Schemas (Request/Response)
-│   └── main.py          # FastAPI Entrypoint
-├── frontend/
-│   └── chainlit_app.py  # UI Logic
-├── data/                # Ingestion drop-zone for PDFs/Text
-├── docker-compose.yml   # Infrastructure orchestration
-└── requirements.txt     # Python dependencies
+The cache bootstraps itself from the SQLite memory store on startup, so it survives process restarts and accumulates value over time without any manual intervention.
 
+The cache is bypassed when any of the following conditions are true — `mode=detailed`, `temperature > 0.1`, `max_tokens` exceeds the default, or `bypass_cache=True`. This matters because without these conditions, action buttons that request different answer styles silently return the same cached concise answer regardless of the parameters sent. This was a real bug caused by `bypass_cache` being silently dropped by Pydantic before it reached the backend — fixed by adding it as an explicit field in `QueryRequest`.
+
+---
+
+## Response Modes
+
+Mode is an explicit request field — `concise` or `detailed` — not something inferred from token count. In `concise` mode, `top_k` documents are retrieved and the LLM is instructed to answer briefly. In `detailed` mode, `top_k` is doubled at the retrieval stage, `max_tokens` is doubled at generation, and the system prompt instructs the LLM to cover all aspects of the question. The Chainlit frontend sends `mode=detailed` and `bypass_cache=True` on long answer and creative answer button clicks.
+
+---
+
+## Engineering Notes
+
+The LangGraph graph is compiled once in `GraphRAGAgent.__init__` and stored as `self._app`. Earlier versions called `build_graph()` inside `query()`, rebuilding the entire state machine on every request — a silent performance bug with no error output.
+
+The planner, grader, and reflect nodes all parse LLM JSON output. If the model wraps its response in markdown fences (` ```json ``` `), `json.loads()` throws and falls back to a default value, breaking the reflection loop invisibly. The `_invoke_json` helper strips fences before parsing to prevent this.
+
+Service initialisation and teardown use the FastAPI `lifespan` async context manager, not the deprecated `on_event` hooks. CORS is configured with `allow_credentials=False` and `allow_origins=["*"]` — the combination of wildcard origins with `allow_credentials=True` is rejected by browsers.
+
+---
+
+## Tech Stack
+
+| Component | Technology |
+|---|---|
+| Agent orchestration | LangGraph |
+| Backend API | FastAPI |
+| Vector store | FAISS |
+| Metadata store | SQLite |
+| LLM + embeddings | Ollama — qwen2.5:7b, mxbai-embed-large |
+| Reranker | BAAI/bge-reranker-v2-m3 (CrossEncoder) |
+| Semantic cache encoder | BAAI/bge-large-en-v1.5 |
+| Frontend | Chainlit |
+
+---
+
+## Project Structure
+
+```
+backend/
+├── agents/
+│   └── graph_agent.py          # LangGraph state machine
+├── core/
+│   ├── config.py               # Pydantic settings from .env
+│   ├── logger.py
+│   └── exceptions.py
+├── services/
+│   ├── retrieve_service.py     # FAISS + reranker + embed cache
+│   ├── memory_service.py       # SQLite-backed conversation memory
+│   ├── semantic_cache_service.py
+│   └── embed_cache_service.py
+├── tools/
+│   ├── embedder.py             # Ollama embedding client
+│   ├── reranker.py             # CrossEncoder wrapper
+│   ├── query_expander.py       # HyDE document generation
+│   └── calculator.py           # LangChain tool for arithmetic
+├── models/
+│   ├── request_models.py       # QueryRequest — mode, bypass_cache fields
+│   └── response_models.py
+└── main.py                     # FastAPI app, lifespan, /query endpoint
+
+frontend/
+└── chainlit_app.py             # Chat UI, action buttons, file upload
 ```
 
 ---
 
-## ⚡ Getting Started
+## Getting Started
 
-### Prerequisites
-
-* [Docker Desktop](https://www.google.com/search?q=https://www.docker.com/) installed.
-* [Ollama](https://www.google.com/search?q=https://ollama.ai/) running locally (or configured in `.env`).
-
-### 1. Clone & Configure
+Ollama must be running locally with the required models:
 
 ```bash
-git clone https://github.com/yourusername/agentic-rag.git
-cd agentic-rag
+ollama pull qwen2.5:7b
+ollama pull mxbai-embed-large
+```
+
+```bash
 cp .env.example .env
-
 ```
-
-### 2. Pull Local Models
-
-Ensure your Ollama instance has the required models:
+The key settings to verify are `OLLAMA_MODEL`, `EMBEDDING_MODEL`, `RERANKER_MODEL`, `TOP_K_RETRIEVAL`, and `SEMANTIC_CACHE_THRESHOLD`.
 
 ```bash
-ollama pull mistral
-ollama pull nomic-embed-text
+# Backend
+uvicorn backend.main:APP --host 0.0.0.0 --port 8000
 
+# Frontend (separate terminal)
+chainlit run frontend/chainlit_app.py -w --port 8001
 ```
 
-### 3. Launch via Docker
-
-Spin up the entire stack with one command:
-
-```bash
-docker-compose up --build
-
-```
-
-* **Backend API:** `http://localhost:8000/docs`
-* **Frontend UI:** `http://localhost:8001`
+API docs are available at `http://localhost:8000/docs`. To ingest documents, drop PDF or TXT files into the `knowledge/` directory — the file watcher detects new files, chunks them at 512 tokens with 100 token overlap, embeds using mxbai-embed-large, and updates the FAISS index automatically.
 
 ---
 
-## 📸 Usage Guide
+## Author
 
-### Ingesting Knowledge
-
-To make the agent "smart," simply drop PDF or Text files into the `data` directory. The system automatically:
-
-1. Detects the new file.
-2. Chunks text (512 tokens with overlap).
-3. Embeds content using `nomic-embed-text`.
-4. Updates the FAISS index.
-
-### Querying
-
-Open the Chainlit UI at `http://localhost:8001`.
-
-* **Standard Mode:** "What is the summary of the uploaded report?"
-* **Deep Research:** Click "Long Answer" to trigger the detailed reasoning path.
-* **Creative Mode:** Click "Creative Answer" to adjust the temperature dynamically.
-
----
-
-## 🔮 Future Roadmap
-
-* [ ] **Multi-Modal Support:** Add vision capabilities for analyzing charts in PDFs.
-* [ ] **Graph Database:** Integrate Neo4j to support Knowledge Graph extraction alongside Vector Search.
-* [ ] **Evaluation Framework:** Integrate RAGAS scores to programmatically measure retrieval quality.
-
----
-
-## 👤 Author
-
-**Shreyash Gaur**
-*AI Engineer | Python Developer | RAG Specialist*
-
-Passionate about building scalable AI systems that solve real-world problems.
+**Shreyash Gaur** — AI Engineer
