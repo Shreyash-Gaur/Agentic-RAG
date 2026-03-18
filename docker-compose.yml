@@ -1,5 +1,4 @@
 version: '3.8'
-
 services:
   backend:
     build:
@@ -9,17 +8,18 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      # 1. Persist the Vector Database
+      # Persist all database files across container restarts
       - ./backend/db:/app/backend/db
-      
-      # 2. THE DROP ZONE: Map your local folder to the container
-      # Now, any file you put in 'data' on your laptop appears inside Docker
-      - ./data:/app/data
+      - ./knowledge:/app/knowledge
+
+    env_file:
+      - .env
     environment:
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
     extra_hosts:
+      # Allows the container to reach host.docker.internal on Linux
       - "host.docker.internal:host-gateway"
-    # Keep GPU deploy block if you want faster ingestion, remove if CPU-only
+    # Remove the deploy block entirely if you don't have an Nvidia GPU
     deploy:
       resources:
         reservations:
@@ -35,6 +35,8 @@ services:
     container_name: agentic_frontend
     ports:
       - "8001:8001"
+    env_file:
+      - .env
     environment:
       - BACKEND_URL=http://backend:8000
     depends_on:

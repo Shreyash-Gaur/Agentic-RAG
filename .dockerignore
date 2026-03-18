@@ -1,0 +1,36 @@
+# Environment — never bake secrets into the image
+.env
+
+# Python cache — rebuilds inside the container anyway
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments — dependencies come from requirements.txt
+.venv/
+venv/
+env/
+
+# Database files — these are persisted via Docker volumes, not baked in
+backend/db/
+
+# Knowledge drop zone — mounted as a volume at runtime
+knowledge/
+
+# Development and editor artifacts
+.git/
+.gitignore
+.DS_Store
+*.swp
+*.swo
+
+# Logs
+*.log
+backend/logs/
+
+# Test files
+tests/
+pytest_cache/
+.coverage
