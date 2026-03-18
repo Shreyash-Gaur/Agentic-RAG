@@ -23,18 +23,17 @@ graph TD
     classDef agent    fill:#f3e8fd,stroke:#9334e6,color:#4a1a7a
     classDef retrieve fill:#fef3e2,stroke:#fa7b17,color:#7a3d00
 
-    A([User Query]):::terminal  --> B{Router}:::decision
-    B -- chitchat               --> C[Chitchat]:::agent
-    B -- vectorstore            --> D[Planner]:::agent
-    C                           --> Z([END]):::terminal
-    D                           --> E[Execute Step]:::agent
-    E -- more steps             --> E
-    E -- done                   --> F[Generate]:::agent
-    F                           --> G{Reflect}:::decision
-    G -- good                   --> Z
-    G -- needs_more             --> H[Targeted Retrieve]:::retrieve
-    G -- replan                 --> D
-    H                           --> F
+    A([User Query]):::terminal      --> B{Router}:::decision
+    B -- chitchat                   --> C[Chitchat]:::agent
+    B -- vectorstore                --> D[Planner]:::agent
+    C                               --> Z([END]):::terminal
+    D                               --> E[Execute Step\nruns each plan step]:::agent
+    E -- all steps done             --> F[Generate]:::agent
+    F                               --> G{Reflect}:::decision
+    G -- good                       --> Z
+    G -- needs_more                 --> H[Targeted Retrieve]:::retrieve
+    G -- replan                     --> D
+    H                               --> F
 ```
 
 ### Agent nodes
