@@ -15,14 +15,26 @@ langchain
 langchain-community
 langchain-ollama
 
-#torch>=2.0.0 --index-url https://download.pytorch.org/whl/cpu
+# --- PyTorch ---
+# Installed separately in Dockerfile before this file is processed.
+# The line below is intentionally left as a floor version only —
+# the Dockerfile RUN block installs the correct CPU or CUDA build first,
+# and pip skips reinstalling if the version satisfies the constraint.
+# torch>=2.0.0
 
-# --- AI & Data Processing (GPU Version) ---
-torch>=2.0.0 
-sentence-transformers>=2.2.0
+# --- HuggingFace stack — pinned to match working WSL environment ---
+# Unpinned versions resolve to transformers>=5.x which breaks FlagEmbedding 1.3.5.
+# These four packages must be upgraded together — do not change one without the others.
+transformers==4.57.2
+tokenizers==0.22.1
+accelerate==1.12.0
+huggingface-hub==0.36.0
+sentence-transformers==5.1.2
+FlagEmbedding==1.3.5
+
+# --- AI & Data Processing ---
 numpy>=1.24.0
-faiss-cpu>=1.7.4 
-FlagEmbedding
+faiss-cpu>=1.7.4
 
 # --- Document Handling ---
 PyPDF2>=3.0.0
@@ -32,3 +44,4 @@ tiktoken>=0.5.0
 requests>=2.31.0
 httpx>=0.25.0
 tqdm>=4.66.0
+sympy>=1.12.0
