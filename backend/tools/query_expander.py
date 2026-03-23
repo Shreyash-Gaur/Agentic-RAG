@@ -36,7 +36,7 @@ def generate_hyde_document(query: str) -> str:
     """
     logger.info("HyDE: generating hypothetical document for: '%s'", query)
     try:
-        llm = ChatOllama(model=settings.OLLAMA_MODEL, temperature=0.1)
+        llm = ChatOllama(model=settings.OLLAMA_MODEL, base_url=settings.OLLAMA_BASE_URL, temperature=0.1)
         prompt = (
             "Write a short, factual paragraph that directly answers the following "
             "question or explains the topic. Do NOT include introductory filler — "

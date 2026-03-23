@@ -87,8 +87,8 @@ class GraphRAGAgent:
         self.model_name = model_name
 
         # Two LLM variants — reuse across requests
-        self._json_llm = ChatOllama(model=model_name, temperature=0, format="json")
-        self._llm      = ChatOllama(model=model_name, temperature=0)
+        self._json_llm = ChatOllama(model=model_name, base_url=settings.OLLAMA_BASE_URL, temperature=0, format="json")
+        self._llm      = ChatOllama(model=model_name, base_url=settings.OLLAMA_BASE_URL, temperature=0)
 
         # Compile graph ONCE
         self._app = self._build_graph()
@@ -102,6 +102,7 @@ class GraphRAGAgent:
         """Create a generation-time LLM with the caller's params."""
         return ChatOllama(
             model=self.model_name,
+            base_url=settings.OLLAMA_BASE_URL,
             temperature=temperature,
             num_predict=max_tokens,
         )
