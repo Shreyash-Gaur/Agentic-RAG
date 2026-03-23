@@ -1,0 +1,41 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .gitattributes — enforce consistent line endings across platforms.
+#
+# WHY THIS MATTERS:
+# Windows git clients default to CRLF line endings. If entrypoint.sh is
+# committed or checked out with CRLF, bash inside the Linux Docker container
+# throws "bad interpreter: No such file or directory" and the container
+# crashes silently. This file forces LF for all shell scripts regardless of
+# the OS the developer is on.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Default: normalize all text files to LF in the repo
+* text=auto eol=lf
+
+# Shell scripts must always be LF — non-negotiable
+*.sh        text eol=lf
+
+# Python files
+*.py        text eol=lf
+
+# Config / markup
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+*.env       text eol=lf
+*.cfg       text eol=lf
+*.ini       text eol=lf
+*.toml      text eol=lf
+
+# These should never be normalized (binary)
+*.index     binary
+*.sqlite    binary
+*.faiss     binary
+*.pkl       binary
+*.npz       binary
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.pdf       binary

@@ -1,25 +1,77 @@
 version: '3.8'
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Universal docker-compose.yml — works on Mac, Linux, WSL2, Windows.
+#
+# BEFORE FIRST RUN:
+#   cp .env.sample .env          # create your config
+#   docker compose build         # build once — both services share the image
+#   docker compose up            # start everything
+#
+# PLATFORM NOTES:
+#   Mac / Windows Docker Desktop → host.docker.internal works out of the box.
+#   Linux / WSL2                 → extra_hosts entry maps it to host-gateway.
+#   Both cases are handled below — no manual changes needed.
+#
+# ── TO ENABLE GPU ─────────────────────────────────────────────────────────────
+# Step 1: Uncomment the `deploy` block below (under backend service).
+# Step 2: In Dockerfile, comment the CPU torch block and uncomment CUDA block.
+# Step 3: Requires NVIDIA Container Toolkit on the host.
+#         Verify with: docker run --rm --gpus all nvidia/cuda:12.1-base-ubuntu22.04 nvidia-smi
+# ─────────────────────────────────────────────────────────────────────────────
+
 services:
+
+  # ── Backend (FastAPI + file watcher) ────────────────────────────────────────
   backend:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+      dockerfile: Dockerfile      # single shared Dockerfile at project root
+    image: agentic-rag:latest     # named so frontend can reuse without rebuilding
     container_name: agentic_backend
+    restart: unless-stopped
+
     ports:
       - "8000:8000"
+
     volumes:
-      # Persist all database files across container restarts
+      # DB files persist across container restarts and image rebuilds
       - ./backend/db:/app/backend/db
+
+      # Drop PDFs / TXTs here — file watcher auto-ingests them
       - ./knowledge:/app/knowledge
 
-    env_file:
-      - .env
+      # HuggingFace model cache
+      # bge-reranker-v2-m3 + bge-large-en-v1.5 = ~2.4 GB
+      # Without this volume they re-download on every `docker compose build`
+      - hf_cache:/root/.cache/huggingface
+
+    env_file: .env
+
     environment:
+      # Reach Ollama running on the host machine.
+      # host.docker.internal is natively resolved on Mac + Windows Docker Desktop.
+      # On Linux / WSL2 it is mapped via extra_hosts below.
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+
     extra_hosts:
-      # Allows the container to reach host.docker.internal on Linux
+      # Maps host.docker.internal → host machine IP on Linux and WSL2.
+      # Docker Desktop (Mac / Windows) already provides this mapping — having
+      # the entry present on those platforms is harmless.
       - "host.docker.internal:host-gateway"
-    # Remove the deploy block entirely if you don't have an Nvidia GPU
+
+    healthcheck:
+      # Waits for the API to be up before the frontend tries to connect.
+      # start_period gives the reranker + semantic cache encoder time to load.
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+    # ── GPU — STEP 1 of 2 ─────────────────────────────────────────────────────
+    # CPU users  : leave this commented (default).
+    # GPU users  : uncomment this block AND swap torch in the Dockerfile (step 2).
     deploy:
       resources:
         reservations:
@@ -28,16 +80,41 @@ services:
               count: 1
               capabilities: [gpu]
 
+  # ── Frontend (Chainlit UI) ───────────────────────────────────────────────────
   frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
+    # Reuses the image built above — no separate build, no duplicated layers.
+    # Saves ~3.5 GB vs the original two-Dockerfile setup.
+    image: agentic-rag:latest
     container_name: agentic_frontend
+    restart: unless-stopped
+
     ports:
       - "8001:8001"
-    env_file:
-      - .env
+
+    env_file: .env
+
     environment:
       - BACKEND_URL=http://backend:8000
+
+    # Override the default CMD (entrypoint.sh / uvicorn) with chainlit
+    command: >
+      chainlit run frontend/chainlit_app.py
+      --host 0.0.0.0
+      --port 8001
+
     depends_on:
-      - backend
+      backend:
+        # Frontend won't start until /health returns 200.
+        # Prevents the "backend not ready" error on cold starts.
+        condition: service_healthy
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Named volumes
+# ─────────────────────────────────────────────────────────────────────────────
+volumes:
+  hf_cache:
+    # Persists across `docker compose down` + `docker compose up` cycles.
+    # To fully wipe and re-download models:
+    #   docker compose down -v               ← removes ALL named volumes
+    #   docker volume rm agentic-rag_hf_cache  ← removes just this one
